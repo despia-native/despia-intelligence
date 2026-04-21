@@ -9,16 +9,8 @@
 }(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
-  // ─── Bridge ─────────────────────────────────────────────────────────────────
-  // Scheme URLs (intelligence://, appleintelligence://, …) are delivered with
-  // window.despia = command, same pattern as the despia-native npm package: a small
-  // command queue runs assignments sequentially with a 1ms gap so rapid bursts do
-  // not stack on the native side. Despia routes each command like an intercepted
-  // navigation without mutating window.location (SPA-friendly, easy to breakpoint).
-  // Native policy surface: iOS WebViewController → decidePolicyFor navigationAction;
-  // Android MainActivity → shouldOverrideUrlLoading.
-  // Results come back through window callbacks the native layer fires directly.
-  // No variable injection - no despia-native variable watching needed.
+  // --- Bridge: window.despia (native setter). FIFO ~1ms between assignments so bursts
+  // never set the property twice in the same synchronous turn.
 
   var _despiaQueue      = [];
   var _despiaProcessing = false;
@@ -27,9 +19,9 @@
     if (_despiaProcessing || _despiaQueue.length === 0) return;
     _despiaProcessing = true;
     var item = _despiaQueue.shift();
-    var command = item && item.command;
+    var url = item && item.url;
     try {
-      if (typeof window !== 'undefined' && command != null) window.despia = command;
+      if (typeof window !== 'undefined' && url != null) window.despia = url;
     } catch (e) {
       if (typeof console !== 'undefined' && console.error) {
         console.error('[despia-intelligence] Despia command failed:', e);
@@ -46,27 +38,13 @@
     }
   }
 
-  function _queueDespiaCommand(command) {
+  function _fire(url) {
     if (typeof window === 'undefined') return;
-    _despiaQueue.push({ command: command });
+    _despiaQueue.push({ url: url });
     _processDespiaQueue();
   }
 
-  function _fire(url) {
-    _queueDespiaCommand(url);
-  }
-
-  // ─── Config ─────────────────────────────────────────────────────────────────
-  // Single source of truth for all supported types.
-  // To add a new type when the native route ships:
-  //   1. Add an entry to TYPES
-  //   2. Set "enabled": true
-  //   3. Done - no other changes needed anywhere
-  //
-  // Fields:
-  //   "route"    string   the intelligence:// route segment
-  //   "enabled"  boolean  false = throws with a clear message if called
-  //   "params"   array    documented params for this type (informational only)
+  // --- Routes: extend TYPES when native adds a route; set enabled when supported.
 
   var TYPES = {
     "text": {
@@ -111,13 +89,7 @@
       throw new Error('[despia-intelligence] Type "' + type + '" is not yet supported in this release. Supported: ' + _supported_list());
     }
 
-    // Build the query manually with encodeURIComponent so every value is
-    // percent-encoded. URLSearchParams.toString() would form-encode spaces
-    // as '+', which iOS URLComponents and Android Uri.getQueryParameter do
-    // not decode back to space - prompts like "Hello world" would arrive at
-    // the model as "Hello+world". encodeURIComponent emits %20, which every
-    // URL parser on both platforms decodes identically. Also covers newlines,
-    // ampersands, quotes, unicode, commas inside array members, everything.
+    // encodeURIComponent per pair (not URLSearchParams): '+' for space breaks iOS/Android query parsers.
     var id    = _uuid();
     var parts = ['id=' + encodeURIComponent(id)];
 
@@ -144,10 +116,7 @@
     });
   }
 
-  // ─── Variable observer ───────────────────────────────────────────────────────
-  // Watches window.intelligence[key] for changes after a scheme call updates it.
-  // Same pattern as despia-native's observeDespiaVariable - scoped to window.intelligence.
-  // Guaranteed to resolve - never leaves a promise hanging.
+  // --- Observe window.intelligence[key] until WebView updates it (poll + timeout).
 
   function _safeSig(val) {
     if (val === undefined) return 'u';
@@ -187,9 +156,7 @@
     check();
   }
 
-  // ─── Runtime ────────────────────────────────────────────────────────────────
-  // window.native_runtime = 'despia' is injected on boot inside the Despia WebView.
-  // There is no window.intelligence_available flag - native_runtime alone gates readiness.
+  // --- Runtime (fixed at import): ready only when native_runtime === 'despia'.
 
   var _rt = (function () {
     if (typeof window === 'undefined') return { ok: false, status: 'unavailable', message: null };
@@ -206,9 +173,7 @@
     return { ok: false, status: _rt.status, message: _rt.message, intent: null, interrupted: false, cancel: function () {} };
   }
 
-  // ─── Events ─────────────────────────────────────────────────────────────────
-  // Plain object of arrays - multiple listeners per event, no overwrites.
-  // .on() returns an unsubscribe function.
+  // --- Events: _ev[event] -> listener arrays; .on() returns unsubscribe.
 
   var _ev = {};
 
@@ -235,59 +200,27 @@
     });
   }
 
-  // ─── State ──────────────────────────────────────────────────────────────────
-
-  var _jobs             = {};  // jobId   -> { handler, params } - active inference jobs
-  var _downloads        = {};  // modelId -> session callbacks - active downloads
-  var _pendingDownloads = {};  // modelId -> session callbacks - saved on focusout, restored on focusin.
-                               // Mirrors _pending for inference but for downloads.
-                               // Downloads continue natively via NSURLSession / WorkManager -
-                               // we just need to keep callbacks alive so onDownloadProgress keeps
-                               // routing and onDownloadEnd fires to the right session handler on reopen.
-  var _removes          = {};  // modelId -> { resolve, reject }
+  var _jobs             = {}; // active inference: jobId -> { handler, params }
+  var _downloads        = {}; // active download callbacks by modelId
+  var _pendingDownloads = {}; // snapshot during background; merged back on focusin
+  var _removes          = {}; // modelId -> { resolve, reject }
   var _removeAll        = null;
   var _booted           = false;
-  var _pending          = {};  // jobId   -> { handler, params } - inference jobs interrupted by background.
-                               // Populated on focusout - every active job saved, not just the last.
-                               // Drained and re-fired on focusin - all jobs resume automatically.
-                               // Cleaned on complete, error, and cancel so only genuinely
-                               // interrupted jobs ever resume. Developer writes zero code for this.
+  var _pending          = {}; // interrupted jobs; swap then drain on focusin (see focusin)
 
-  // ─── Native app lifecycle ───────────────────────────────────────────────────
-  //
-  // BACKGROUND:
-  // visibilitychange was tried first but was unreliable in WebViews. iOS suspends
-  // the JS thread before visibilitychange handlers reliably execute - state saves
-  // happened too late or not at all. On Android timing was inconsistent.
-  //
-  // SOLUTION:
-  // Despia injects window.focusout and window.focusin directly from the OS:
-  //   iOS applicationDidEnterBackground   -> window.focusout()
-  //   iOS applicationWillEnterForeground  -> window.focusin()
-  //   Android onPause                     -> window.focusout()
-  //   Android onResume                    -> window.focusin()
-  //
-  // The native runtime calls these synchronously before suspending the WebView.
-  // The JS context is provably alive. This is the guaranteed window to save state.
-  //
-  // DESIGN:
-  // Every active job is saved to _pending on focusout.
-  // Every job in _pending is re-fired on focusin.
-  // 7 concurrent jobs? All 7 resume. Developer writes nothing for this.
+  // --- Lifecycle: Despia calls window.focusout / window.focusin from the OS (reliable
+  // in WebViews vs visibilitychange). focusout snapshots jobs + download callbacks;
+  // focusin re-runs pending inference via run(); downloads keep natively, callbacks restored.
 
   if (typeof window !== 'undefined') {
 
     window.focusout = function () {
-      // ── Inference jobs ──────────────────────────────────────────────────────
-      // Native inference session dies when app backgrounds.
-      // Save every active job so focusin can re-fire them.
       Object.keys(_jobs).forEach(function (id) {
         var job = _jobs[id];
         if (!job) return;
 
         _pending[id] = { handler: job.handler, params: job.params };
 
-        // Call handler.interrupted if developer set it - backwards compatible
         if (job.handler && job.handler.interrupted) {
           try { job.handler.interrupted(job.params); } catch (e) {}
         }
@@ -295,25 +228,12 @@
 
       _jobs = {};
 
-      // ── Downloads ───────────────────────────────────────────────────────────
-      // Downloads continue natively via NSURLSession / WorkManager - we do not
-      // need to re-fire them. We just need to keep the session callbacks alive
-      // so that onDownloadProgress keeps flowing and onDownloadEnd fires to
-      // the right handler when the download completes on reopen.
-      //
-      // Save _downloads into _pendingDownloads. On focusin, restore them back
-      // into _downloads so the native callbacks have somewhere to route to.
       Object.keys(_downloads).forEach(function (modelId) {
         _pendingDownloads[modelId] = _downloads[modelId];
       });
-      // Do NOT clear _downloads here - if the app merely backgrounds and returns
-      // quickly, the callbacks are still registered and work without any action.
     };
 
     window.focusin = function () {
-      // ── Inference jobs ──────────────────────────────────────────────────────
-      // Re-fire every interrupted inference job.
-      // Swap _pending before iterating so cancel() during resume doesn't re-queue.
       var toResume = _pending;
       _pending = {};
 
@@ -324,18 +244,6 @@
         }
       });
 
-      // ── Downloads ───────────────────────────────────────────────────────────
-      // Restore saved download callbacks back into _downloads.
-      //
-      // If the app was backgrounded while a download was in progress,
-      // _pendingDownloads has the session callbacks. On reopen:
-      //  - If the download completed while backgrounded, the native layer
-      //     replays onDownloadEnd - _downloads[modelId] must be there to receive it.
-      //  - If the download is still in progress, onDownloadProgress events resume
-      //     flowing - _downloads[modelId] must be there to receive them.
-      //
-      // Merge rather than replace - in case a new download was started
-      // between focusout and focusin (edge case, but safe to handle).
       Object.keys(_pendingDownloads).forEach(function (modelId) {
         if (!_downloads[modelId]) {
           _downloads[modelId] = _pendingDownloads[modelId];
@@ -346,19 +254,13 @@
 
   }
 
-  // ─── Boot ───────────────────────────────────────────────────────────────────
-  // Inference: property assignments on window (legacy bridge). Model lifecycle:
-  // registrar calls on window.intelligence. Called lazily on first run() / models.*.
+  // --- Boot: window.onML* for streaming; window.intelligence.on* registrars for models.
 
   function _boot() {
     if (_booted || !_rt.ok) return;
     _booted = true;
 
     if (!window.intelligence) window.intelligence = {};
-
-    // ── Inference callbacks - property assignments flat on window
-    // The native layer fires these directly on window, not on window.intelligence.
-    // chunk = full accumulated text so far - replace, do not append.
 
     window.onMLToken = function (id, chunk) {
       var job = _jobs[id];
@@ -367,7 +269,6 @@
       }
     };
 
-    // fullText = complete response string - same as last chunk, guaranteed final.
     window.onMLComplete = function (id, fullText) {
       var job = _jobs[id];
       if (job) {
@@ -379,7 +280,6 @@
       }
     };
 
-    // onMLError includes jobId - used to route the error to the right job handler.
     window.onMLError = function (err) {
       var jobId = err && err.jobId;
       var job   = _jobs[jobId];
@@ -399,7 +299,7 @@
     });
 
     window.intelligence.onDownloadProgress(function (modelId, pct) {
-      // Native sends 0-1 float; tolerate 0-100 values if the runtime ever sends those.
+      // Native often sends 0-1; tolerate 0-100.
       var percent = pct;
       if (typeof percent === 'number') {
         if (percent <= 1) percent = Math.round(percent * 100);
@@ -445,12 +345,6 @@
     });
   }
 
-  // ─── run ────────────────────────────────────────────────────────────────────
-  // Primary API. params is a plain object. type routes the call.
-  // handler wires the callbacks. Returns a call handle with .cancel() and .intent.
-  // Every job is automatically observed - focusout saves it, focusin resumes it.
-  // Any number of concurrent jobs all resume. Developer writes nothing for this.
-
   function run(params, handler) {
     params  = params  || {};
     handler = handler || {};
@@ -468,16 +362,12 @@
       interrupted: false,
       cancel: function () {
         delete _jobs[built.id];
-        // Cancelled explicitly - remove from _pending so focusin does not resume it.
         delete _pending[built.id];
       },
     };
   }
 
-  // ─── models ─────────────────────────────────────────────────────────────────
-
   var models = {
-    // availableModels is injected by the WebView on boot - read synchronously, no scheme call.
     available: function () {
       if (!_rt.ok) return Promise.resolve([]);
       _boot();
@@ -486,8 +376,6 @@
       );
     },
 
-    // Fires the scheme; WebView updates window.intelligence.installedModels. _observe
-    // polls until the value changes (despia-native-style). Pre-clear avoids stale resolve.
     installed: function () {
       if (!_rt.ok) return Promise.resolve(_nr());
       _boot();
@@ -526,8 +414,6 @@
       });
     },
   };
-
-  // ─── Public API ─────────────────────────────────────────────────────────────
 
   var intelligence = {
     run:     run,

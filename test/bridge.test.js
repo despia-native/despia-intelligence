@@ -102,6 +102,17 @@ test('loads under Node (no window): runtime not ready, run returns NotReady shap
   assert.equal(typeof call.cancel, 'function');
 });
 
+test('Despia WebView context: two run() calls queue window.despia with ~1ms between', async () => {
+  const { intelligence, hrefLog } = loadInDespiaBridgeContext();
+  intelligence.run({ type: 'text', model: 'a', prompt: 'first', stream: true }, {});
+  intelligence.run({ type: 'text', model: 'b', prompt: 'second', stream: true }, {});
+  assert.equal(hrefLog.length, 1);
+  assert.match(hrefLog[0], /prompt=first/);
+  await new Promise((r) => setTimeout(r, 15));
+  assert.equal(hrefLog.length, 2);
+  assert.match(hrefLog[1], /prompt=second/);
+});
+
 test('Despia WebView context: runtime ready and run fires intelligence:// URL', () => {
   const { intelligence, hrefLog, window } = loadInDespiaBridgeContext();
   assert.equal(intelligence.runtime.ok, true);

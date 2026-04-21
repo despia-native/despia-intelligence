@@ -8,7 +8,7 @@ On-device LLM inference for iOS and Android hybrid apps, straight from your exis
 [![license](https://img.shields.io/npm/l/despia-intelligence)](LICENSE)
 [![source](https://img.shields.io/badge/source-GitHub-181717?logo=github)](https://github.com/despia-native/despia-intelligence)
 
-**[Learn about Despia Native](https://setup.despia.com/introduction)** · **[Source on GitHub](https://github.com/despia-native/despia-intelligence)** · **[Changelog](CHANGELOG.md)**
+**[Learn about Despia Native](https://setup.despia.com/introduction)** · **[Source on GitHub](https://github.com/despia-native/despia-intelligence)**
 
 ### Why this exists
 
@@ -55,7 +55,7 @@ This release enables `text` inference. Open-weights text models from Qwen, Liqui
 
 ## Contributors and forks
 
-If you maintain native code or fork this repo, **[RAW_BRIDGE.md](RAW_BRIDGE.md)** documents the **raw** Local Intelligence bridge: every `intelligence://` URL, every `window` callback, lifecycle hooks, and how each npm export maps to those primitives. App developers who only install from npm do not need this file.
+If you maintain native code or fork this repo, **[INTERNALS.md](INTERNALS.md)** is the internal doc: raw WebView bridge reference (every `intelligence://` URL, every `window` callback, lifecycle hooks, and how each npm export maps to those primitives) plus package maintenance notes. It lives in the GitHub repo only; it is not included in the npm package (`package.json` `files`). App developers who only install from npm do not need this file.
 
 ---
 
@@ -124,7 +124,7 @@ No initialization. No setup. No `init()` call. Open your app in a Despia WebView
 
 Calling `intelligence.run()` hands your params to the Despia Native Runtime with a fresh job ID. The native layer loads the model onto whichever acceleration path is fastest for that model on the current device (Metal or Core ML on iOS, GPU or NNAPI on Android, CPU fast-path as a universal fallback), runs inference, and streams tokens back into your JavaScript handler as they are generated. The SDK routes each token to the correct handler by job ID, so running many concurrent jobs in the same page is safe.
 
-The package delivers each `intelligence://` (and related) URL through **`window.despia`**, Despia's small bridge surface around navigation (same **queued** **`window.despia = command`** pattern as the **`despia-native`** npm package: sequential execution with a short delay between commands so bursts do not stack on the WebView). Native handles each command like an intercepted URL load **without** mutating **`window.location.href`**, which avoids SPA router noise and is simpler to trace in debugging.
+The native WebView shell (your Xcode and Android Studio Despia project) exposes the bridge as **`window.despia`**: assign the scheme string, the same idea as the older **`window.location.href = 'intelligence://…'`** bridge but **without** touching **`location`** (fewer SPA router issues). **`run`** and **`models.*`** enqueue URLs internally, then **`_fire`** applies **`window.despia = url`** one at a time with about **1ms** between writes, so two or more calls in the same moment never hit the setter concurrently in one stack frame. Native still intercepts like a navigation URL.
 
 Values you pass (prompts, system strings, arrays) are percent-encoded end-to-end, so spaces, newlines, quotes, ampersands, and unicode all survive the bridge intact. New parameters added on the native side flow through without an SDK upgrade - any extra key you put on the params object is forwarded as-is.
 
@@ -165,7 +165,7 @@ If you are an AI coding agent generating code against this SDK, follow these rul
 
 - Import as a default: `import intelligence from 'despia-intelligence'`
 - Gate calls with `intelligence.runtime.ok`. Display `intelligence.runtime.message` when it is false. Do not invent your own status strings.
-- If you bypass the SDK and talk to the raw bridge, fire schemes with **`window.despia = url`**, not **`window.location.href`**, so behaviour matches this package and Despia's WebView lifecycle.
+- Use **`intelligence.run`** / **`models`** for all scheme traffic; do not use **`window.location.href`** for **`intelligence://`** schemes (the package uses **`window.despia`** via **`_fire`**).
 - Do not implement your own `visibilitychange`, `pagehide`, or `beforeunload` persistence for inference. The SDK already auto-resumes every active job via `window.focusout` and `window.focusin` called by the native layer. Any number of concurrent jobs resume.
 - Do not use `handler.interrupted(intent)` to implement resume. Resume is automatic. `interrupted` fires once per active job on `focusout` (per handler, not once globally). Use for UI affordances or analytics only.
 - `stream(chunk)` receives the full accumulated text so far, not a delta. Replace the DOM content, do not append.
