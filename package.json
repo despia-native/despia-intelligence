@@ -1,0 +1,63 @@
+{
+  "name": "despia-intelligence",
+  "version": "1.0.0",
+  "description": "Local AI models and on-device LLM inference for hybrid mobile apps on iOS and Android, powered by the Despia Native Runtime. Private, offline, zero per-token cost.",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.js",
+      "require": "./index.js",
+      "default": "./index.js"
+    }
+  },
+  "scripts": {
+    "test": "node --test ./test/bridge.test.js ./test/import-default.test.mjs",
+    "prepublishOnly": "npm test"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "despia",
+    "despia-intelligence",
+    "local-ai",
+    "local-llm",
+    "on-device",
+    "on-device-ai",
+    "on-device-llm",
+    "llm",
+    "ai",
+    "intelligence",
+    "hybrid-app",
+    "hybrid-mobile-app",
+    "mobile-ai",
+    "native-runtime",
+    "webview",
+    "ios",
+    "android",
+    "offline-ai",
+    "private-ai",
+    "neural-engine",
+    "nnapi",
+    "qwen",
+    "gemma",
+    "liquid-ai"
+  ],
+  "author": "Despia <npm@despia.com> (https://despia.com)",
+  "license": "MIT",
+  "homepage": "https://despia.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/despia-native/despia-intelligence.git"
+  },
+  "bugs": {
+    "url": "https://github.com/despia-native/despia-intelligence/issues",
+    "email": "npm@despia.com"
+  },
+  "sideEffects": false
+}
