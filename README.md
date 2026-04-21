@@ -49,15 +49,22 @@ Included for free in every Despia app. This package is a separate project with i
 
 ## Requirements
 
-- The app must be running inside the Despia Native Runtime on iOS or Android, on a build that has Local Intelligence enabled.
+- The app must be running inside the Despia Native Runtime on iOS or Android (`window.native_runtime === 'despia'`).
 - Outside the Despia Native Runtime (for example, a desktop browser preview of the same code or a server-side render), every API is a no-op that returns a not-ready shape. `intelligence.runtime.ok` is the single source of truth; gate behind it and provide a fallback for those environments.
 - No native install step on the developer side, no `init()`, no config file, no bundler plugin.
+
+---
+
+## Contributors and forks
+
+If you maintain native code or fork this repo, **[RAW_BRIDGE.md](RAW_BRIDGE.md)** documents the **raw** Local Intelligence bridge: every `intelligence://` URL, every `window` callback, lifecycle hooks, and how each npm export maps to those primitives. App developers who only install from npm do not need this file.
 
 ---
 
 ## Table of Contents
 
 - [Requirements](#requirements)
+- [Contributors and forks](#contributors-and-forks)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Runtime Detection](#runtime-detection)
@@ -129,18 +136,17 @@ The SDK only activates inside the Despia native runtime on a build with Local In
 
 ```js
 intelligence.runtime.ok       // boolean
-intelligence.runtime.status   // 'ready' | 'runtime_incompatible' | 'outdated' | 'unavailable'
+intelligence.runtime.status   // 'ready' | 'outdated' | 'unavailable'
 intelligence.runtime.message  // string | null - safe to render directly in your UI
 ```
 
-| Status                 | Meaning                                                                                 |
-| ---------------------- | --------------------------------------------------------------------------------------- |
-| `ready`                | Despia runtime active and Local Intelligence is supported. Call the API.                |
-| `runtime_incompatible` | Running in Despia, but this build predates Local Intelligence. Ask user to update Despia. |
-| `outdated`             | Despia-like UA detected but runtime missing. Ask user to install the latest version.    |
-| `unavailable`          | Not running in Despia. Fall back to a cloud model or a web-only flow.                   |
+| Status        | Meaning                                                                              |
+| ------------- | ------------------------------------------------------------------------------------ |
+| `ready`       | `window.native_runtime === 'despia'`. Despia WebView is active; use the Local AI API. |
+| `outdated`    | Despia-like UA detected but the runtime flag is missing. Ask user to update the app. |
+| `unavailable` | Not running inside the Despia WebView. Fall back to a cloud model or a web-only flow. |
 
-When `ok` is `false`, every API call is a no-op that returns the same runtime shape. You never need to wrap calls in a try/catch.
+When `ok` is `false`, `run`, `models.installed`, `models.download`, `models.remove`, and `models.removeAll` return the not-ready shape (or a rejected promise where applicable). `models.available()` still resolves, but to an **empty array** — always check `runtime.ok` before trusting model lists. You never need to wrap calls in a try/catch for runtime gating.
 
 ```js
 if (!intelligence.runtime.ok) {
@@ -149,7 +155,7 @@ if (!intelligence.runtime.ok) {
 }
 ```
 
-Local Intelligence availability is injected at launch by the native runtime via `window.native_runtime` and `window.intelligence_available`. No feature detection delay, no round-trip.
+Readiness is determined only by `window.native_runtime === 'despia'` (injected at launch). Model catalogues live on `window.intelligence.availableModels` / `installedModels` (WebView-injected). No feature-detection round-trip for the runtime flag.
 
 ---
 
@@ -162,7 +168,7 @@ If you are an AI coding agent generating code against this SDK, follow these rul
 - Do not implement your own `visibilitychange`, `pagehide`, or `beforeunload` persistence for inference. The SDK already auto-resumes every active job via `window.focusout` and `window.focusin` called by the native layer. Any number of concurrent jobs resume.
 - Do not use `handler.interrupted(intent)` to implement resume. Resume is automatic. `interrupted` is only a notification hook for UI affordances like "Resuming..." toasts or analytics.
 - `stream(chunk)` receives the full accumulated text so far, not a delta. Replace the DOM content, do not append.
-- Use `intelligence.models.available()` to discover installable models at runtime. Do not hardcode model lists; new models ship over the air without an SDK upgrade.
+- Use `intelligence.models.available()` to read installable models at runtime (backed by `window.intelligence.availableModels`). Do not hardcode model lists; new models ship over the air without an SDK upgrade.
 - For a model that is not yet installed, call `intelligence.models.download(id, callbacks)` first. The `onProgress` callback delivers percentage updates. Downloads survive backgrounding.
 - Only `type: 'text'` is enabled in the current release. Any other value throws a clear error at runtime. Do not add fallbacks that silently ignore the error; surface it to the developer.
 - Any key in the params object is forwarded to the native layer as-is. Arrays become comma-separated after URL encoding. You do not need to encode values yourself.
@@ -197,8 +203,8 @@ call.cancel(); // remove this job from the SDK. No further callbacks for this jo
 
 | Method                              | Returns                  | Description                                                           |
 | ----------------------------------- | ------------------------ | --------------------------------------------------------------------- |
-| `available()`                       | `Promise<Model[]>`       | All models the runtime can install.                                   |
-| `installed()`                       | `Promise<Model[]>`       | Models currently on device.                                           |
+| `available()`                       | `Promise<Model[]>`       | Reads `window.intelligence.availableModels` (WebView-injected); resolves immediately when `runtime.ok`. |
+| `installed()`                       | `Promise<Model[]>`       | Fires `query=installed`, then resolves when `window.intelligence.installedModels` updates (variable observer; never hangs). |
 | `download(id, { onStart, onProgress, onEnd, onError })` | `void`                   | Start a background download. Fire-and-forget; results via callbacks. |
 | `remove(id)`                        | `Promise<void>`          | Remove a specific model from the device.                              |
 | `removeAll()`                       | `Promise<void>`          | Remove every downloaded model. Useful for "clear cache" affordances.  |

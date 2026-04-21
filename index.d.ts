@@ -1,7 +1,7 @@
 // despia-intelligence
 // Wrapper around the Despia Local Intelligence WebView bridge.
 
-export type RuntimeStatus = 'ready' | 'runtime_incompatible' | 'outdated' | 'unavailable'
+export type RuntimeStatus = 'ready' | 'outdated' | 'unavailable'
 
 export type Runtime =
   | { ok: true;  status: 'ready';                         message: null          }
@@ -77,7 +77,8 @@ declare const intelligence: {
   run(params: Params, handler?: Handler): CallHandle | NotReady
   runtime: Runtime
   models: {
-    available(): Promise<Model[] | NotReady>
+    /** Reads `window.intelligence.availableModels` synchronously (injected on boot). Returns `[]` when `runtime.ok` is false. */
+    available(): Promise<Model[]>
     installed(): Promise<Model[] | NotReady>
     download(modelId: string, callbacks?: {
       onStart?:    () => void

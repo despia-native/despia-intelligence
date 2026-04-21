@@ -2,6 +2,8 @@
 
 Internal team docs for `despia-intelligence`. Not published to users.
 
+For the **full raw WebView bridge** (scheme URLs, `window` callbacks, lifecycle hooks, and a 1:1 map to the npm API), see **[RAW_BRIDGE.md](./RAW_BRIDGE.md)**.
+
 ---
 
 ## What this package is
@@ -27,21 +29,19 @@ Despia turns web apps into native iOS and Android apps by running them inside a 
 
 Results come back through global `window` callbacks the native layer fires directly. There is no variable injection. The `despia-native` variable-watching Promise system is not used here - intelligence results are direct function calls, not variable writes.
 
-### Runtime detection - two variables injected at boot
+### Runtime detection — `native_runtime` only
 
 ```
-window.native_runtime         = 'despia'   Despia runtime is active
-window.intelligence_available = true        Local AI is supported on this build
+window.native_runtime = 'despia'   Despia WebView runtime is active
 ```
 
-Both resolved once at import time. Immutable after that.
+There is no `intelligence_available` flag. Resolved once at import time.
 
-| `native_runtime` | `intelligence_available` | `runtime.status` | `ok` |
-|---|---|---|---|
-| `'despia'` | `true` | `'ready'` | `true` |
-| `'despia'` | not set / false | `'runtime_incompatible'` | `false` |
-| not set | UA includes `'despia'` | `'outdated'` | `false` |
-| not set | UA clean | `'unavailable'` | `false` |
+| `native_runtime` | `runtime.status` | `ok` |
+|---|---|---|
+| `'despia'` | `'ready'` | `true` |
+| not set, UA includes `'despia'` | `'outdated'` | `false` |
+| not set, UA clean | `'unavailable'` | `false` |
 
 `window.__DESPIA_UA_OVERRIDE = true` before import forces `hasUA = true` for white-label builds with a custom user agent. Not publicly documented.
 
@@ -49,7 +49,8 @@ Both resolved once at import time. Immutable after that.
 
 | Action | Scheme |
 |---|---|
-| Available models | `intelligence://models?query=all` |
+| Available models (catalog) | Injected as `window.intelligence.availableModels` — npm `models.available()` reads this only |
+| Available models (scheme, native) | `intelligence://models?query=all` may still exist for other callers |
 | Installed models | `intelligence://models?query=installed` |
 | Download model | `intelligence://download?model=<id>` |
 | Remove model | `intelligence://remove?model=<id>` |
@@ -60,26 +61,19 @@ Both resolved once at import time. Immutable after that.
 | Vision (future) | `intelligence://vision?id=<uuid>&model=<id>&prompt=<text>&file=<path>` |
 | Embed (future) | `intelligence://embed?id=<uuid>&model=<id>&input=<text>` |
 
-### Window callbacks - native layer fires these
+### Native bridge — registrar pattern on `window.intelligence`
 
-Inference - flat on `window`:
+Native exposes **registrar functions** (call with a handler). The native layer invokes the registered handler when events fire. The npm `_boot()` registers SDK-internal handlers this way — it never assigns `window.onMLToken = …` or `window.intelligence.onFoo = function …` as property callbacks.
+
+Inference (registered in `_boot` via native API):
 
 ```
-window.onMLToken(id, chunk)
-  chunk = full accumulated text so far - replace, do not append
-  routes to handler.stream(chunk) for matching job
-
-window.onMLComplete(id, fullText)
-  fullText = complete response string (same value as the last onMLToken chunk but guaranteed final)
-  routes to handler.complete(fullText), then deletes job from _jobs and _pending
-
-window.onMLError({ jobId, errorCode, errorMessage })
-  errorCode 2 = missing id param
-  errorCode 3 = runtime inference error
-  routes to handler.error({ code, message }), then deletes job from _jobs and _pending
+window.intelligence.onMLToken(function (jobId, chunk) { ... })
+window.intelligence.onMLComplete(function (jobId, fullText) { ... })
+window.intelligence.onMLError(function ({ jobId, errorCode, errorMessage }) { ... })
 ```
 
-App lifecycle - fired by the native runtime:
+App lifecycle — still assigned on `window` by the native runtime (not registrars):
 
 ```
 window.focusout()
@@ -97,19 +91,26 @@ window.focusin()
   and clears _pendingDownloads
 ```
 
-Model management - on `window.intelligence`:
+Model catalogues (WebView-injected arrays):
 
 ```
-window.intelligence.onAvailableModelsLoaded(list)
-window.intelligence.onInstalledModelsLoaded(list)
-window.intelligence.onDownloadStart(modelId)
-window.intelligence.onDownloadProgress(modelId, pct)
-window.intelligence.onDownloadEnd(modelId)
-window.intelligence.onDownloadError(modelId, err)
-window.intelligence.onRemoveSuccess(modelId)
-window.intelligence.onRemoveError(modelId, err)
-window.intelligence.onRemoveAllSuccess()
-window.intelligence.onRemoveAllError(err)
+window.intelligence.availableModels   // read synchronously; npm models.available() uses this
+window.intelligence.installedModels     // updated after install/remove; may still refresh via scheme
+```
+
+`models.installed()` uses **`_observe('installedModels', …)`** (despia-native-style variable watch) after firing `intelligence://models?query=installed` — not `onInstalledModelsLoaded`.
+
+Model + download + remove events (registrars used in `_boot`):
+
+```
+window.intelligence.onDownloadStart(function (modelId) { ... })
+window.intelligence.onDownloadProgress(function (modelId, pct) { ... })
+window.intelligence.onDownloadEnd(function (modelId) { ... })
+window.intelligence.onDownloadError(function (modelId, err) { ... })
+window.intelligence.onRemoveSuccess(function (modelId) { ... })
+window.intelligence.onRemoveError(function (modelId, err) { ... })
+window.intelligence.onRemoveAllSuccess(function () { ... })
+window.intelligence.onRemoveAllError(function (err) { ... })
 ```
 
 ### App lifecycle

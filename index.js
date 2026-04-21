@@ -108,22 +108,62 @@
     });
   }
 
+  // ─── Variable observer ───────────────────────────────────────────────────────
+  // Watches window.intelligence[key] for changes after a scheme call updates it.
+  // Same pattern as despia-native's observeDespiaVariable — scoped to window.intelligence.
+  // Guaranteed to resolve — never leaves a promise hanging.
+
+  function _safeSig(val) {
+    if (val === undefined) return 'u';
+    if (val === null) return 'n';
+    var t = typeof val;
+    if (t !== 'object') return t + ':' + String(val);
+    try { return 'o:' + JSON.stringify(val); } catch (e) { return 'o:[unserializable]'; }
+  }
+
+  function _observe(key, callback, timeout) {
+    timeout = timeout || 30000;
+    var startTime = Date.now();
+    var namespace = (typeof window !== 'undefined' && window.intelligence) ? window.intelligence : {};
+    var initialRef = namespace[key];
+    var initialSig = _safeSig(initialRef);
+
+    var ready = function (val) {
+      if (val === undefined || val === 'n/a') return false;
+      if (Array.isArray(val) && val.length === 0) return false;
+      if (val && typeof val === 'object' && !Array.isArray(val) && Object.keys(val).length === 0) return false;
+      return true;
+    };
+
+    var changed = function (val) {
+      if (val === null) return true;
+      if (val !== initialRef) return true;
+      return _safeSig(val) !== initialSig;
+    };
+
+    function check() {
+      var val = window.intelligence && window.intelligence[key];
+      if (ready(val) && changed(val)) { callback(val); return; }
+      if (Date.now() - startTime < timeout) { setTimeout(check, 100); return; }
+      callback(undefined);
+    }
+
+    check();
+  }
+
   // ─── Runtime ────────────────────────────────────────────────────────────────
-  // window.native_runtime         = 'despia'  injected by Despia on boot
-  // window.intelligence_available = true       injected when Local AI is supported
-  // Resolved once at load time. Immutable after that.
+  // window.native_runtime = 'despia' is injected on boot inside the Despia WebView.
+  // There is no window.intelligence_available flag — native_runtime alone gates readiness.
 
   var _rt = (function () {
     if (typeof window === 'undefined') return { ok: false, status: 'unavailable', message: null };
 
     var hasRuntime = window.native_runtime === 'despia';
-    var hasAI      = window.intelligence_available === true;
     var hasUA      = (navigator.userAgent.toLowerCase().indexOf('despia') !== -1) || window.__DESPIA_UA_OVERRIDE === true;
 
-    if (hasRuntime && hasAI)  return { ok: true,  status: 'ready',                message: null };
-    if (hasRuntime && !hasAI) return { ok: false, status: 'runtime_incompatible', message: 'Update Despia to the latest version to enable Local Intelligence.' };
-    if (hasUA)                return { ok: false, status: 'outdated',             message: 'Your Despia app is outdated. Install the latest version to use Local Intelligence.' };
-                              return { ok: false, status: 'unavailable',          message: null };
+    if (hasRuntime) return { ok: true,  status: 'ready',         message: null };
+    if (hasUA)      return { ok: false, status: 'outdated',      message: 'Your Despia app is outdated. Install the latest version to use Local Intelligence.' };
+                    return { ok: false, status: 'unavailable',   message: null };
   }());
 
   function _nr() {
@@ -271,37 +311,35 @@
   }
 
   // ─── Boot ───────────────────────────────────────────────────────────────────
-  // Wires window callbacks to job handlers. Called lazily on first run().
-  // Safe to call multiple times - guarded by _booted flag.
+  // Registers handlers via native window.intelligence.on*(fn) call pattern.
+  // Called lazily on first run() / models.*. Safe to call multiple times.
 
   function _boot() {
     if (_booted || !_rt.ok) return;
     _booted = true;
 
-    window.onMLToken = function (id, chunk) {
-      var job = _jobs[id];
+    if (!window.intelligence) window.intelligence = {};
+
+    // ── Inference callbacks (registered as function calls on window.intelligence)
+    window.intelligence.onMLToken(function (jobId, chunk) {
+      var job = _jobs[jobId];
       if (job && job.handler && job.handler.stream) {
         try { job.handler.stream(chunk); } catch (e) {}
       }
-    };
+    });
 
-    // onMLComplete(id, fullText)
-    // Native sends the full response string as the second argument.
-    // Same value as the last onMLToken chunk but guaranteed to be the final complete value.
-    window.onMLComplete = function (id, fullText) {
-      var job = _jobs[id];
+    window.intelligence.onMLComplete(function (jobId, fullText) {
+      var job = _jobs[jobId];
       if (job) {
         if (job.handler && job.handler.complete) {
           try { job.handler.complete(fullText); } catch (e) {}
         }
-        delete _jobs[id];
-        // Completed cleanly - remove from _pending so focusin does not re-fire it.
-        // Only genuinely interrupted jobs auto-resume.
-        delete _pending[id];
+        delete _jobs[jobId];
+        delete _pending[jobId];
       }
-    };
+    });
 
-    window.onMLError = function (err) {
+    window.intelligence.onMLError(function (err) {
       var jobId = err && err.jobId;
       var job   = _jobs[jobId];
       if (job) {
@@ -309,72 +347,61 @@
           try { job.handler.error({ code: err.errorCode, message: err.errorMessage }); } catch (e) {}
         }
         delete _jobs[jobId];
-        // Errored - remove from _pending so focusin does not retry a failed job.
         delete _pending[jobId];
       }
-    };
+    });
 
-    if (!window.intelligence) window.intelligence = {};
-
-    window.intelligence.onAvailableModelsLoaded = function (list) {
-      if (window.__resAvail) { window.__resAvail(list); window.__resAvail = null; }
-    };
-
-    window.intelligence.onInstalledModelsLoaded = function (list) {
-      if (window.__resInst) { window.__resInst(list); window.__resInst = null; }
-    };
-
-    window.intelligence.onDownloadStart = function (id) {
-      var cb = _downloads[id];
+    window.intelligence.onDownloadStart(function (modelId) {
+      var cb = _downloads[modelId];
       if (cb && cb.onStart) try { cb.onStart(); } catch (e) {}
-      _emit('downloadStart', id);
-    };
+      _emit('downloadStart', modelId);
+    });
 
-    window.intelligence.onDownloadProgress = function (id, pct) {
-      // Native sends a 0-1 float. Normalise to a 0-100 integer once here so
-      // session callbacks and global event listeners both receive the same
-      // developer-friendly percentage value.
+    window.intelligence.onDownloadProgress(function (modelId, pct) {
+      // Native sends 0–1 float; tolerate 0–100 values if the runtime ever sends those.
       var percent = pct;
       if (typeof percent === 'number') {
-        if (percent <= 1) percent = percent * 100;
-        percent = Math.max(0, Math.min(100, Math.round(percent)));
+        if (percent <= 1) percent = Math.round(percent * 100);
+        else percent = Math.max(0, Math.min(100, Math.round(percent)));
+      } else {
+        percent = 0;
       }
-      var cb = _downloads[id];
+      var cb = _downloads[modelId];
       if (cb && cb.onProgress) try { cb.onProgress(percent); } catch (e) {}
-      _emit('downloadProgress', id, percent);
-    };
+      _emit('downloadProgress', modelId, percent);
+    });
 
-    window.intelligence.onDownloadEnd = function (id) {
-      var cb = _downloads[id];
+    window.intelligence.onDownloadEnd(function (modelId) {
+      var cb = _downloads[modelId];
       if (cb && cb.onEnd) try { cb.onEnd(); } catch (e) {}
-      delete _downloads[id];
-      delete _pendingDownloads[id];  // download complete - no need to restore on focusin
-      _emit('downloadEnd', id);
-    };
+      delete _downloads[modelId];
+      delete _pendingDownloads[modelId];
+      _emit('downloadEnd', modelId);
+    });
 
-    window.intelligence.onDownloadError = function (id, err) {
-      var cb = _downloads[id];
+    window.intelligence.onDownloadError(function (modelId, err) {
+      var cb = _downloads[modelId];
       if (cb && cb.onError) try { cb.onError(err); } catch (e) {}
-      delete _downloads[id];
-      delete _pendingDownloads[id];  // download failed - no need to restore on focusin
-      _emit('downloadError', id, err);
-    };
+      delete _downloads[modelId];
+      delete _pendingDownloads[modelId];
+      _emit('downloadError', modelId, err);
+    });
 
-    window.intelligence.onRemoveSuccess = function (id) {
-      if (_removes[id]) { _removes[id].resolve(); delete _removes[id]; }
-    };
+    window.intelligence.onRemoveSuccess(function (modelId) {
+      if (_removes[modelId]) { _removes[modelId].resolve(); delete _removes[modelId]; }
+    });
 
-    window.intelligence.onRemoveError = function (id, err) {
-      if (_removes[id]) { _removes[id].reject(new Error(err)); delete _removes[id]; }
-    };
+    window.intelligence.onRemoveError(function (modelId, err) {
+      if (_removes[modelId]) { _removes[modelId].reject(new Error(err)); delete _removes[modelId]; }
+    });
 
-    window.intelligence.onRemoveAllSuccess = function () {
+    window.intelligence.onRemoveAllSuccess(function () {
       if (_removeAll) { _removeAll.resolve(); _removeAll = null; }
-    };
+    });
 
-    window.intelligence.onRemoveAllError = function (err) {
+    window.intelligence.onRemoveAllError(function (err) {
       if (_removeAll) { _removeAll.reject(new Error(err)); _removeAll = null; }
-    };
+    });
   }
 
   // ─── run ────────────────────────────────────────────────────────────────────
@@ -409,26 +436,25 @@
   // ─── models ─────────────────────────────────────────────────────────────────
 
   var models = {
+    // availableModels is injected by the WebView on boot — read synchronously, no scheme call.
     available: function () {
-      if (!_rt.ok) return Promise.resolve(_nr());
+      if (!_rt.ok) return Promise.resolve([]);
       _boot();
-      if (window.intelligence && window.intelligence.availableModels && window.intelligence.availableModels.length) {
-        return Promise.resolve(window.intelligence.availableModels);
-      }
-      return new Promise(function (resolve) {
-        window.__resAvail = resolve;
-        _fire('intelligence://models?query=all');
-      });
+      return Promise.resolve(
+        (window.intelligence && window.intelligence.availableModels) || []
+      );
     },
 
+    // Fires the scheme; WebView updates window.intelligence.installedModels. _observe
+    // polls until the value changes (despia-native-style). Pre-clear avoids stale resolve.
     installed: function () {
       if (!_rt.ok) return Promise.resolve(_nr());
       _boot();
-      if (window.intelligence && window.intelligence.installedModels && window.intelligence.installedModels.length) {
-        return Promise.resolve(window.intelligence.installedModels);
-      }
       return new Promise(function (resolve) {
-        window.__resInst = resolve;
+        if (window.intelligence) window.intelligence.installedModels = [];
+        _observe('installedModels', function (val) {
+          resolve(val || []);
+        });
         _fire('intelligence://models?query=installed');
       });
     },
