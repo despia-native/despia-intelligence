@@ -10,14 +10,50 @@
   'use strict';
 
   // ─── Bridge ─────────────────────────────────────────────────────────────────
-  // The Despia native runtime intercepts window.location.href before navigation.
-  // iOS:     WebViewController.swift → decidePolicyFor navigationAction
-  // Android: MainActivity.java       → shouldOverrideUrlLoading
+  // Scheme URLs (intelligence://, appleintelligence://, …) are delivered with
+  // window.despia = command, same pattern as the despia-native npm package: a small
+  // command queue runs assignments sequentially with a 1ms gap so rapid bursts do
+  // not stack on the native side. Despia routes each command like an intercepted
+  // navigation without mutating window.location (SPA-friendly, easy to breakpoint).
+  // Native policy surface: iOS WebViewController → decidePolicyFor navigationAction;
+  // Android MainActivity → shouldOverrideUrlLoading.
   // Results come back through window callbacks the native layer fires directly.
   // No variable injection - no despia-native variable watching needed.
 
+  var _despiaQueue      = [];
+  var _despiaProcessing = false;
+
+  function _processDespiaQueue() {
+    if (_despiaProcessing || _despiaQueue.length === 0) return;
+    _despiaProcessing = true;
+    var item = _despiaQueue.shift();
+    var command = item && item.command;
+    try {
+      if (typeof window !== 'undefined' && command != null) window.despia = command;
+    } catch (e) {
+      if (typeof console !== 'undefined' && console.error) {
+        console.error('[despia-intelligence] Despia command failed:', e);
+      }
+    }
+    if (typeof setTimeout !== 'undefined') {
+      setTimeout(function () {
+        _despiaProcessing = false;
+        _processDespiaQueue();
+      }, 1);
+    } else {
+      _despiaProcessing = false;
+      _processDespiaQueue();
+    }
+  }
+
+  function _queueDespiaCommand(command) {
+    if (typeof window === 'undefined') return;
+    _despiaQueue.push({ command: command });
+    _processDespiaQueue();
+  }
+
   function _fire(url) {
-    if (typeof window !== 'undefined') window.location.href = url;
+    _queueDespiaCommand(url);
   }
 
   // ─── Config ─────────────────────────────────────────────────────────────────

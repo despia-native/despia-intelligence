@@ -4,10 +4,17 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-04-21
+
+### Changed
+
+- **`_fire()`** in [`index.js`](./index.js) now queues scheme URLs the same way as **despia-native**: sequential **`window.despia = command`** with a **1ms** gap between deliveries, **try/catch** per assignment, so bursts (for example resume + download) align with Despia's npm bridge instead of hammering the WebView in one stack. [`README.md`](./README.md), [`RAW_BRIDGE.md`](./RAW_BRIDGE.md), and [`MAINTENANCE.md`](./MAINTENANCE.md) describe the queue for app developers and raw integrators.
+
 ## [1.0.2] - 2026-04-21
 
 ### Changed
 
+- **`_fire()`** assigns **`window.despia = url`** instead of **`window.location.href`**, matching the Despia minimal bridge (SPA-friendly, easier to trace). [`README.md`](./README.md), [`RAW_BRIDGE.md`](./RAW_BRIDGE.md), and [`MAINTENANCE.md`](./MAINTENANCE.md) updated accordingly.
 - README, [`RAW_BRIDGE.md`](./RAW_BRIDGE.md), [`MAINTENANCE.md`](./MAINTENANCE.md), and JSDoc/comments in [`index.d.ts`](./index.d.ts) / [`index.js`](./index.js) now consistently describe ML streaming callbacks on **`window`** (`onMLToken`, `onMLComplete`, `onMLError`), model lifecycle on **`window.intelligence`**, and **`window.native_runtime === 'despia'`** as the sole runtime gate.
 - **MAINTENANCE**: per-release WebView QA checklist for verifying the native bridge in a real WebView.
 - **README**: link to the [Despia Native introduction](https://setup.despia.com/introduction); requirements, runtime, and API table copy aligned with current behaviour.

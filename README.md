@@ -124,6 +124,8 @@ No initialization. No setup. No `init()` call. Open your app in a Despia WebView
 
 Calling `intelligence.run()` hands your params to the Despia Native Runtime with a fresh job ID. The native layer loads the model onto whichever acceleration path is fastest for that model on the current device (Metal or Core ML on iOS, GPU or NNAPI on Android, CPU fast-path as a universal fallback), runs inference, and streams tokens back into your JavaScript handler as they are generated. The SDK routes each token to the correct handler by job ID, so running many concurrent jobs in the same page is safe.
 
+The package delivers each `intelligence://` (and related) URL through **`window.despia`**, Despia's small bridge surface around navigation (same **queued** **`window.despia = command`** pattern as the **`despia-native`** npm package: sequential execution with a short delay between commands so bursts do not stack on the WebView). Native handles each command like an intercepted URL load **without** mutating **`window.location.href`**, which avoids SPA router noise and is simpler to trace in debugging.
+
 Values you pass (prompts, system strings, arrays) are percent-encoded end-to-end, so spaces, newlines, quotes, ampersands, and unicode all survive the bridge intact. New parameters added on the native side flow through without an SDK upgrade - any extra key you put on the params object is forwarded as-is.
 
 ---
@@ -163,6 +165,7 @@ If you are an AI coding agent generating code against this SDK, follow these rul
 
 - Import as a default: `import intelligence from 'despia-intelligence'`
 - Gate calls with `intelligence.runtime.ok`. Display `intelligence.runtime.message` when it is false. Do not invent your own status strings.
+- If you bypass the SDK and talk to the raw bridge, fire schemes with **`window.despia = url`**, not **`window.location.href`**, so behaviour matches this package and Despia's WebView lifecycle.
 - Do not implement your own `visibilitychange`, `pagehide`, or `beforeunload` persistence for inference. The SDK already auto-resumes every active job via `window.focusout` and `window.focusin` called by the native layer. Any number of concurrent jobs resume.
 - Do not use `handler.interrupted(intent)` to implement resume. Resume is automatic. `interrupted` fires once per active job on `focusout` (per handler, not once globally). Use for UI affordances or analytics only.
 - `stream(chunk)` receives the full accumulated text so far, not a delta. Replace the DOM content, do not append.

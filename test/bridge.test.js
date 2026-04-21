@@ -45,16 +45,15 @@ function loadInDespiaBridgeContext(options) {
     focusout: null,
     focusin: null,
   };
-  window.location = {};
-  Object.defineProperty(window.location, 'href', {
+  Object.defineProperty(window, 'despia', {
     configurable: true,
     enumerable: true,
     get() {
-      return window._href || '';
+      return window._despiaUrl;
     },
     set(u) {
       hrefLog.push(u);
-      window._href = u;
+      window._despiaUrl = u;
       if (options && options.simulateInstalledResponse && String(u).indexOf('query=installed') !== -1) {
         setTimeout(function () {
           window.intelligence.installedModels = [{ id: 'm1', name: 'M1', category: 'text' }];

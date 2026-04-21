@@ -10,14 +10,14 @@ Every public behaviour of the npm package maps to something here. The package do
 
 Despia runs your web app inside a native WebView shell. The bridge is bidirectional.
 
-**JS → native:** assign a URL to `window.location.href`. The native runtime intercepts the navigation before it completes.
+**JS → native:** assign the scheme URL string to **`window.despia`**. Despia routes it like an intercepted navigation **without** assigning **`window.location.href`**, which avoids SPA router clashes and keeps bridge traffic easy to log or breakpoint.
 
 - **iOS:** `WebViewController.swift` → `decidePolicyFor navigationAction`
 - **Android:** `MainActivity.java` → `shouldOverrideUrlLoading`
 
 **Native → JS:** two patterns coexist. **Streaming inference** uses **property assignments on `window`**: native calls `window.onMLToken`, `window.onMLComplete`, and `window.onMLError` after you assign them. **Model download / remove / progress** uses **registrar functions on `window.intelligence`** (`onDownloadStart(fn)`, etc.). Lifecycle hooks **`window.focusout` / `window.focusin`** are assigned on `window` by native. No variable injection for tokens; no promise handoff from native for inference.
 
-Examples below sometimes use `despia(url)` from the [`despia-native`](https://www.npmjs.com/package/despia-native) package; that helper ultimately sets `window.location.href`. You can set `window.location.href` directly.
+Examples below use **`window.despia = '…'`** directly. The [`despia-native`](https://www.npmjs.com/package/despia-native) **`despia(url)`** helper should forward through the same **`window.despia`** surface on current runtimes; confirm with native if you mix package and WebView versions.
 
 ---
 
@@ -46,7 +46,7 @@ const ready = window.native_runtime === 'despia'
 ### Fire the call
 
 ```js
-window.location.href =
+window.despia =
   'appleintelligence://?prompt=' + encodeURIComponent('What is the capital of France?')
 ```
 
@@ -67,7 +67,7 @@ function handleAIResponse(response) {
   document.getElementById('output').textContent = response
 }
 
-window.location.href =
+window.despia =
   'appleintelligence://?prompt=' + encodeURIComponent('Explain TCP in one sentence.')
 ```
 
@@ -78,7 +78,7 @@ function myCallback(response) {
   console.log(response)
 }
 
-window.location.href =
+window.despia =
   'appleintelligence://?' +
   'instructions=' + encodeURIComponent('Reply in one sentence.') +
   '&prompt=' + encodeURIComponent('What is TCP?') +
@@ -131,7 +131,7 @@ window.onMLError = function (err) {
 Use **`intelligence://text`** plus `encodeURIComponent` for every query value (the npm package does this for all keys so `+` is never used for spaces).
 
 ```js
-window.location.href =
+window.despia =
   'intelligence://text?' +
   'id=' + encodeURIComponent(jobId) +
   '&prompt=' + encodeURIComponent('What is the capital of France?')
@@ -140,7 +140,7 @@ window.location.href =
 With system prompt and model:
 
 ```js
-window.location.href =
+window.despia =
   'intelligence://text?' +
   'id=' + encodeURIComponent(jobId) +
   '&model=' + encodeURIComponent('qwen3-0.6b') +
@@ -219,7 +219,7 @@ The npm package’s `models.available()` resolves to this array (or `[]` when no
 Fire **`intelligence://models?query=installed`**. The WebView then **writes `window.intelligence.installedModels` directly** (same idea as `despia-native` watching `window[variableName]` after a scheme). The npm package does **not** depend on `onInstalledModelsLoaded`; it pre-clears the array, fires the scheme, and **polls** until `installedModels` becomes a “ready” non-empty snapshot or the value’s signature changes - then resolves (or resolves `[]` after a timeout so the promise never hangs).
 
 ```js
-window.location.href = 'intelligence://models?query=installed'
+window.despia = 'intelligence://models?query=installed'
 // … later, WebView assigns e.g.:
 // window.intelligence.installedModels = [{ id: 'qwen3_0_6b', name: 'Qwen3 0.6b', category: 'text' }, ...]
 ```
@@ -229,7 +229,7 @@ You can still read **`window.intelligence.installedModels`** synchronously when 
 ### Download a model
 
 ```js
-window.location.href =
+window.despia =
   'intelligence://download?model=' + encodeURIComponent('qwen3_0_6b')
 ```
 
@@ -251,10 +251,10 @@ window.intelligence.onDownloadError((modelId, err) => {
 ### Remove models
 
 ```js
-window.location.href =
+window.despia =
   'intelligence://remove?model=' + encodeURIComponent('qwen3_0_6b')
 
-window.location.href = 'intelligence://remove?model=all'
+window.despia = 'intelligence://remove?model=all'
 ```
 
 **Registrars:**
@@ -309,7 +309,7 @@ Minimal HTML page showing the same primitives the npm layer uses: runtime gate, 
         // Raw pattern: fire refresh, then poll installedModels until WebView updates it
         // (npm models.installed() uses the same observe pattern internally).
         window.intelligence.installedModels = []
-        window.location.href = 'intelligence://models?query=installed'
+        window.despia = 'intelligence://models?query=installed'
         ;(function waitInstalled() {
           var list = window.intelligence.installedModels || []
           if (list.length > 0) {
@@ -331,7 +331,7 @@ Minimal HTML page showing the same primitives the npm layer uses: runtime gate, 
           window.intelligence.onDownloadEnd(function () {
             runInference()
           })
-          window.location.href = 'intelligence://download?model=qwen3_0_6b'
+          window.despia = 'intelligence://download?model=qwen3_0_6b'
         }
 
         function runInference() {
@@ -347,7 +347,7 @@ Minimal HTML page showing the same primitives the npm layer uses: runtime gate, 
             console.error(err && err.errorCode, err && err.errorMessage)
           }
 
-          window.location.href =
+          window.despia =
             'intelligence://text' +
             '?id=' +
             encodeURIComponent(jobId) +
@@ -376,6 +376,10 @@ Minimal HTML page showing the same primitives the npm layer uses: runtime gate, 
 ## Scheme and callback tables
 
 ### JS → native (scheme URLs)
+
+From JavaScript, deliver any row below by assigning **`window.despia = url`** (full string, same encoding you would use for a navigation URL).
+
+The **`despia-intelligence`** npm package does not assign raw from every call site: it uses the same **command queue** pattern as **`despia-native`** (sequential **`window.despia = command`**, **1ms** between commands, **try/catch** per write). Raw integrators may still assign **`window.despia`** directly for a single call.
 
 | URL | Action |
 | --- | --- |
@@ -418,16 +422,16 @@ Older examples may show `intelligence://?id=...` without the `text` segment; the
 
 | npm API | Raw bridge equivalent |
 | --- | --- |
-| `intelligence.run({ type: 'text', ... }, handler)` | `window.location.href = 'intelligence://text?id=<uuid>&...'` plus **`window.onMLToken` / `onMLComplete` / `onMLError`** assignments; SDK routes by job id |
+| `intelligence.run({ type: 'text', ... }, handler)` | Queued **`window.despia = 'intelligence://text?id=<uuid>&...'`** (despia-native-style) plus **`window.onMLToken` / `onMLComplete` / `onMLError`** assignments; SDK routes by job id |
 | `intelligence.models.available()` | Reads `window.intelligence.availableModels` synchronously (no scheme) |
 | `intelligence.models.installed()` | Pre-clears `installedModels`, `_observe` polls until it changes, `_fire` `query=installed`; resolves `[]` on timeout |
 | `intelligence.models.download(id, callbacks)` | `intelligence://download?model=<id>` + download callbacks / global events |
 | `intelligence.models.remove(id)` | `intelligence://remove?model=<id>` + remove callbacks |
 | `intelligence.models.removeAll()` | `intelligence://remove?model=all` + remove-all callbacks |
 | `intelligence.on('downloadEnd', fn)` etc. | Same native events as `onDownloadEnd`; the package fans out through an internal listener list |
-| Auto-resume after background | Package-owned `window.focusout` / `window.focusin` that re-assign `location.href` for interrupted jobs and restore download callback maps |
+| Auto-resume after background | Package-owned `window.focusout` / `window.focusin` that re-call `run()` for interrupted jobs (each URL goes through the same **`window.despia`** queue) and restore download callback maps |
 
-The package adds: stable **`encodeURIComponent`** query building (no `+` for spaces), UUID generation, per-job handler tables, **`try`/`catch` around user handlers**, `focusout`/`focusin` orchestration, and normalised download progress (0-100). `_boot()` assigns **`window.onML*`** for inference and registers **`window.intelligence.onDownload*` / `onRemove*`** via function calls. Both match native.
+The package adds: stable **`encodeURIComponent`** query building (no `+` for spaces), UUID generation, per-job handler tables, **`try`/`catch` around user handlers**, `focusout`/`focusin` orchestration, normalised download progress (0-100), and a **despia-native-compatible** **`window.despia`** command queue. `_boot()` assigns **`window.onML*`** for inference and registers **`window.intelligence.onDownload*` / `onRemove*`** via function calls. Both match native.
 
 ---
 

@@ -10,7 +10,7 @@ For the **full raw WebView bridge** (scheme URLs, `window` callbacks, lifecycle 
 
 A thin wrapper around the Despia Local Intelligence WebView bridge. It does four things and nothing else:
 
-1. Serialises a plain params object to an `intelligence://` scheme URL (percent-encoded via `encodeURIComponent`)
+1. Serialises a plain params object to an `intelligence://` scheme URL (percent-encoded via `encodeURIComponent`) and enqueues it for **`window.despia = command`** via the same **despia-native-style** command queue (not `location.href`)
 2. Generates and manages job IDs invisibly
 3. Routes native `window` callbacks to the right handler
 4. Auto-resumes every interrupted job on app return via `window.focusout` / `window.focusin`
@@ -22,7 +22,7 @@ It does not restrict what the native system can do. Adding a new scheme route re
 
 ## How the native bridge works
 
-Despia turns web apps into native iOS and Android apps by running them inside a native WebView shell. The native runtime intercepts `window.location.href` before navigation occurs:
+Despia turns web apps into native iOS and Android apps by running them inside a native WebView shell. The npm package fires scheme URLs through **`window.despia`** (queued like **despia-native**), which Despia routes like an intercepted navigation without touching **`location.href`** (better for SPAs and debugging). Native handling aligns with the same policy entry points as URL loads:
 
 - iOS: `WebViewController.swift` → `decidePolicyFor navigationAction`
 - Android: `MainActivity.java` → `shouldOverrideUrlLoading`
