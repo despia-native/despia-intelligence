@@ -19,9 +19,6 @@ function loadInDespiaBridgeContext(options) {
   const hrefLog = [];
   const nativeReg = {};
   const names = [
-    'onMLToken',
-    'onMLComplete',
-    'onMLError',
     'onDownloadStart',
     'onDownloadProgress',
     'onDownloadEnd',
@@ -107,7 +104,7 @@ test('loads under Node (no window): runtime not ready, run returns NotReady shap
 });
 
 test('Despia WebView context: runtime ready and run fires intelligence:// URL', () => {
-  const { intelligence, hrefLog } = loadInDespiaBridgeContext();
+  const { intelligence, hrefLog, window } = loadInDespiaBridgeContext();
   assert.equal(intelligence.runtime.ok, true);
   assert.equal(intelligence.runtime.status, 'ready');
 
@@ -121,6 +118,9 @@ test('Despia WebView context: runtime ready and run fires intelligence:// URL', 
   assert.match(hrefLog[0], /prompt=Hello%20world/);
   assert.match(hrefLog[0], /model=m/);
   assert.match(hrefLog[0], /id=11111111-1111-4111-8111-111111111111/);
+  assert.equal(typeof window.onMLToken, 'function');
+  assert.equal(typeof window.onMLComplete, 'function');
+  assert.equal(typeof window.onMLError, 'function');
 });
 
 test('Despia WebView context: unknown type throws', () => {

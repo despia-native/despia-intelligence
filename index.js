@@ -311,8 +311,8 @@
   }
 
   // ─── Boot ───────────────────────────────────────────────────────────────────
-  // Registers handlers via native window.intelligence.on*(fn) call pattern.
-  // Called lazily on first run() / models.*. Safe to call multiple times.
+  // Inference: property assignments on window (legacy bridge). Model lifecycle:
+  // registrar calls on window.intelligence. Called lazily on first run() / models.*.
 
   function _boot() {
     if (_booted || !_rt.ok) return;
@@ -320,26 +320,31 @@
 
     if (!window.intelligence) window.intelligence = {};
 
-    // ── Inference callbacks (registered as function calls on window.intelligence)
-    window.intelligence.onMLToken(function (jobId, chunk) {
-      var job = _jobs[jobId];
+    // ── Inference callbacks — property assignments flat on window
+    // The native layer fires these directly on window, not on window.intelligence.
+    // chunk = full accumulated text so far — replace, do not append.
+
+    window.onMLToken = function (id, chunk) {
+      var job = _jobs[id];
       if (job && job.handler && job.handler.stream) {
         try { job.handler.stream(chunk); } catch (e) {}
       }
-    });
+    };
 
-    window.intelligence.onMLComplete(function (jobId, fullText) {
-      var job = _jobs[jobId];
+    // fullText = complete response string — same as last chunk, guaranteed final.
+    window.onMLComplete = function (id, fullText) {
+      var job = _jobs[id];
       if (job) {
         if (job.handler && job.handler.complete) {
           try { job.handler.complete(fullText); } catch (e) {}
         }
-        delete _jobs[jobId];
-        delete _pending[jobId];
+        delete _jobs[id];
+        delete _pending[id];
       }
-    });
+    };
 
-    window.intelligence.onMLError(function (err) {
+    // onMLError includes jobId — used to route the error to the right job handler.
+    window.onMLError = function (err) {
       var jobId = err && err.jobId;
       var job   = _jobs[jobId];
       if (job) {
@@ -349,7 +354,7 @@
         delete _jobs[jobId];
         delete _pending[jobId];
       }
-    });
+    };
 
     window.intelligence.onDownloadStart(function (modelId) {
       var cb = _downloads[modelId];

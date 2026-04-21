@@ -8,7 +8,7 @@ On-device LLM inference for iOS and Android hybrid apps, straight from your exis
 [![license](https://img.shields.io/npm/l/despia-intelligence)](LICENSE)
 [![source](https://img.shields.io/badge/source-GitHub-181717?logo=github)](https://github.com/despia-native/despia-intelligence)
 
-**[Learn about Despia Native](https://despia.com)** · **[Source on GitHub](https://github.com/despia-native/despia-intelligence)**
+**[Learn about Despia Native](https://despia.com)** · **[Source on GitHub](https://github.com/despia-native/despia-intelligence)** · **[Changelog](CHANGELOG.md)**
 
 ### Why this exists
 
@@ -166,7 +166,7 @@ If you are an AI coding agent generating code against this SDK, follow these rul
 - Import as a default: `import intelligence from 'despia-intelligence'`
 - Gate calls with `intelligence.runtime.ok`. Display `intelligence.runtime.message` when it is false. Do not invent your own status strings.
 - Do not implement your own `visibilitychange`, `pagehide`, or `beforeunload` persistence for inference. The SDK already auto-resumes every active job via `window.focusout` and `window.focusin` called by the native layer. Any number of concurrent jobs resume.
-- Do not use `handler.interrupted(intent)` to implement resume. Resume is automatic. `interrupted` is only a notification hook for UI affordances like "Resuming..." toasts or analytics.
+- Do not use `handler.interrupted(intent)` to implement resume. Resume is automatic. `interrupted` fires once per active job on `focusout` (per handler, not once globally) — UI affordances or analytics only.
 - `stream(chunk)` receives the full accumulated text so far, not a delta. Replace the DOM content, do not append.
 - Use `intelligence.models.available()` to read installable models at runtime (backed by `window.intelligence.availableModels`). Do not hardcode model lists; new models ship over the air without an SDK upgrade.
 - For a model that is not yet installed, call `intelligence.models.download(id, callbacks)` first. The `onProgress` callback delivers percentage updates. Downloads survive backgrounding.
@@ -316,7 +316,7 @@ sections.forEach((section) => {
 
 User backgrounds mid-generation. All seven jobs are saved. User returns. All seven re-fire with fresh native sessions and new IDs, each one streaming back into the correct DOM element because the handlers still capture their own `section`. Developer writes nothing for that.
 
-`handler.interrupted(intent)` is still available as a notification hook if you want to surface a "Resuming..." toast or log interrupted jobs to analytics. It fires for every active job on `focusout`. It is no longer needed to implement resume - the SDK does that.
+`handler.interrupted(intent)` is still available as a notification hook if you want to surface a "Resuming..." toast or log interrupted jobs to analytics. It fires **once per active job** on `focusout` (each job’s handler is called separately, not a single global callback). It is not used to implement resume — the SDK does that for every concurrent job automatically.
 
 Whether the native layer actually runs N streams in parallel or queues them internally is a native-side concern and probably device-dependent. From the JS side, the contract is simple: every job you fire is tracked, every interrupted job comes back.
 

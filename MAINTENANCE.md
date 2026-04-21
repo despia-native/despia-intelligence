@@ -61,17 +61,11 @@ There is no `intelligence_available` flag. Resolved once at import time.
 | Vision (future) | `intelligence://vision?id=<uuid>&model=<id>&prompt=<text>&file=<path>` |
 | Embed (future) | `intelligence://embed?id=<uuid>&model=<id>&input=<text>` |
 
-### Native bridge — registrar pattern on `window.intelligence`
+### Native bridge — two surfaces
 
-Native exposes **registrar functions** (call with a handler). The native layer invokes the registered handler when events fire. The npm `_boot()` registers SDK-internal handlers this way — it never assigns `window.onMLToken = …` or `window.intelligence.onFoo = function …` as property callbacks.
+**Inference (streaming):** native invokes **`window.onMLToken`**, **`window.onMLComplete`**, **`window.onMLError`** after the SDK assigns them in `_boot()` (property assignment on `window`). **`onMLError`** includes **`jobId`** for concurrent job routing.
 
-Inference (registered in `_boot` via native API):
-
-```
-window.intelligence.onMLToken(function (jobId, chunk) { ... })
-window.intelligence.onMLComplete(function (jobId, fullText) { ... })
-window.intelligence.onMLError(function ({ jobId, errorCode, errorMessage }) { ... })
-```
+**Model lifecycle:** native exposes **registrar functions** on **`window.intelligence`** (`onDownloadStart(fn)`, etc.). `_boot()` registers SDK handlers via those calls.
 
 App lifecycle — still assigned on `window` by the native runtime (not registrars):
 
@@ -254,6 +248,42 @@ The supported list is generated dynamically - always accurate as types are enabl
 - Do not clear `_downloads` on `focusout`. The download is still in progress natively and callbacks must keep routing if the app returns quickly.
 - Do not try to re-fire downloads on `focusin` the way inference jobs are re-fired. NSURLSession / WorkManager own the transfer - re-firing would start a duplicate download.
 - Do not attempt to fabricate `onDownloadProgress` events on `focusin`. The native layer does not replay them and we have no source of truth for the current percentage until the next real progress tick.
+
+---
+
+## Per-release WebView QA (native build)
+
+Run this on a **real Despia iOS and Android build** that includes Local Intelligence, before treating an SDK + native combo as shippable. Node tests in this repo do not replace this pass.
+
+### Environment
+
+- [ ] `window.native_runtime === 'despia'`
+- [ ] `intelligence.runtime.ok === true` and `status === 'ready'` after import
+- [ ] `window.intelligence` exists; `availableModels` is a non-empty array after boot (when models are configured on the build)
+
+### Inference (`run`, `type: 'text'`)
+
+- [ ] After first `intelligence.run(...)`, **`typeof window.onMLToken === 'function'`** (and `onMLComplete`, `onMLError`) — SDK `_boot()` wired flat on `window`
+- [ ] Single job: tokens stream; **`stream` handler receives full accumulated text** each time (replace, not append semantics in UI)
+- [ ] **`complete`** fires once with final string; **`onMLError`** path if you force an error — payload includes **`jobId`** when multiple jobs exist
+- [ ] **Two concurrent jobs** with different prompts: each handler only receives its job’s tokens/errors
+
+### Models
+
+- [ ] **`await intelligence.models.available()`** matches native catalog (ids, names, categories)
+- [ ] **`await intelligence.models.installed()`** resolves after `query=installed` (empty array valid); no hung promise after 35s wait
+- [ ] **Download**: `onStart` / `onProgress` (0–100) / `onEnd` or `onError`; background app mid-download then return — progress or end still reaches the session callbacks or global `intelligence.on('download*')` listeners as designed
+- [ ] **Remove** / **removeAll**: promise resolves; `installedModels` updates
+
+### Lifecycle
+
+- [ ] **Home button mid-generation**: on return, interrupted jobs **resume** without app code re-calling `run` for those intents
+- [ ] **`handler.interrupted`**: fires **once per active job** on `focusout` if you use it (optional smoke)
+
+### Release hygiene
+
+- [ ] Update **[CHANGELOG.md](./CHANGELOG.md)** with the version and date when you cut the release
+- [ ] Bump **`package.json`** version; tag Git; **`npm publish`** after `npm test`
 
 ---
 

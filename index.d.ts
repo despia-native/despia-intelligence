@@ -55,7 +55,11 @@ export interface Handler {
   stream?:      (chunk: string) => void          // accumulated text - replace, do not append
   complete?:    (text: string) => void           // full final response string
   error?:       (err: { code: number; message: string }) => void
-  interrupted?: (intent: Params) => void         // notification hook for app-background. Fires for every active job on focusout. Resume is automatic and covers every concurrent job - use this for UI affordances (e.g. "Resuming..." toast) or analytics only.
+  /**
+   * Fires once per active job on focusout (once per handler, not once globally).
+   * Resume is automatic for all concurrent jobs — use for UI affordances (e.g. "Resuming…" toast) or analytics only; do not implement resume here.
+   */
+  interrupted?: (intent: Params) => void
 }
 
 export interface CallHandle {

@@ -20,6 +20,7 @@
     "index.js",
     "index.d.ts",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "keywords": [
