@@ -57,7 +57,7 @@ export interface Handler {
   error?:       (err: { code: number; message: string }) => void
   /**
    * Fires once per active job on focusout (once per handler, not once globally).
-   * Resume is automatic for all concurrent jobs — use for UI affordances (e.g. "Resuming…" toast) or analytics only; do not implement resume here.
+   * Resume is automatic for all concurrent jobs - use for UI affordances (e.g. "Resuming…" toast) or analytics only; do not implement resume here.
    */
   interrupted?: (intent: Params) => void
 }

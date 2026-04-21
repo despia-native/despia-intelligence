@@ -4,20 +4,21 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
-### Fixed
-
-- Inference callbacks are assigned on **`window`** (`window.onMLToken`, `window.onMLComplete`, `window.onMLError`) to match the native WebView contract. Model lifecycle callbacks remain registrar calls on **`window.intelligence`**.
+## [1.0.2] - 2026-04-21
 
 ### Changed
 
-- Internal docs ([`RAW_BRIDGE.md`](./RAW_BRIDGE.md), [`MAINTENANCE.md`](./MAINTENANCE.md)) describe the dual bridge surface (flat `window` for ML vs `window.intelligence` for downloads/removes).
+- README, [`RAW_BRIDGE.md`](./RAW_BRIDGE.md), [`MAINTENANCE.md`](./MAINTENANCE.md), and JSDoc/comments in [`index.d.ts`](./index.d.ts) / [`index.js`](./index.js) now consistently describe ML streaming callbacks on **`window`** (`onMLToken`, `onMLComplete`, `onMLError`), model lifecycle on **`window.intelligence`**, and **`window.native_runtime === 'despia'`** as the sole runtime gate.
+- **MAINTENANCE**: per-release WebView QA checklist for verifying the native bridge in a real WebView.
+- **README**: link to the [Despia Native introduction](https://setup.despia.com/introduction); requirements, runtime, and API table copy aligned with current behaviour.
+- Documentation typography: ASCII hyphen and punctuation instead of Unicode em dash in project markdown and comments.
 
 ## [1.0.1] - 2026-04-21
 
 ### Added
 
-- [`RAW_BRIDGE.md`](./RAW_BRIDGE.md) — internal reference for the raw scheme + callback bridge.
-- [`_safeSig`](./index.js) / [`_observe`](./index.js) — variable observer for `window.intelligence.installedModels` after `intelligence://models?query=installed`, avoiding races with `onInstalledModelsLoaded`.
+- [`RAW_BRIDGE.md`](./RAW_BRIDGE.md) - internal reference for the raw scheme + callback bridge.
+- [`_safeSig`](./index.js) / [`_observe`](./index.js) - variable observer for `window.intelligence.installedModels` after `intelligence://models?query=installed`, avoiding races with `onInstalledModelsLoaded`.
 
 ### Changed
 

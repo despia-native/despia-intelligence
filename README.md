@@ -8,7 +8,7 @@ On-device LLM inference for iOS and Android hybrid apps, straight from your exis
 [![license](https://img.shields.io/npm/l/despia-intelligence)](LICENSE)
 [![source](https://img.shields.io/badge/source-GitHub-181717?logo=github)](https://github.com/despia-native/despia-intelligence)
 
-**[Learn about Despia Native](https://despia.com)** · **[Source on GitHub](https://github.com/despia-native/despia-intelligence)** · **[Changelog](CHANGELOG.md)**
+**[Learn about Despia Native](https://setup.despia.com/introduction)** · **[Source on GitHub](https://github.com/despia-native/despia-intelligence)** · **[Changelog](CHANGELOG.md)**
 
 ### Why this exists
 
@@ -41,8 +41,6 @@ Shipping an AI feature in a web app today means piping every prompt, every piece
 
 This release enables `text` inference. Open-weights text models from Qwen, Liquid LFM, Google Gemma, and Tencent Youtu are securely downloaded on demand from [Hugging Face](https://huggingface.co) into the Despia container and run entirely on-device.
 
-Included for free in every Despia app. This package is a separate project with its own release cycle; adding it to a Despia build enables Local AI on that build, nothing else changes.
-
 > **Local AI in Despia is unlimited and 100% free.** Every inference runs on the user's device inside Despia's Local AI System, part of the Despia Native Runtime. There is no per-token billing, no monthly quota, no rate limit, and no usage cap - because there is no server in the loop. Run as many completions as the device can handle, for as long as your users have your app installed.
 
 ---
@@ -50,7 +48,7 @@ Included for free in every Despia app. This package is a separate project with i
 ## Requirements
 
 - The app must be running inside the Despia Native Runtime on iOS or Android (`window.native_runtime === 'despia'`).
-- Outside the Despia Native Runtime (for example, a desktop browser preview of the same code or a server-side render), every API is a no-op that returns a not-ready shape. `intelligence.runtime.ok` is the single source of truth; gate behind it and provide a fallback for those environments.
+- Outside the Despia Native Runtime (for example, a desktop browser preview of the same code or a server-side render), **`intelligence.runtime.ok`** is false. Most APIs return a **not-ready** handle or a promise that resolves to one; **`models.available()`** is the exception: it always resolves to a **model array**, but returns **`[]`** when not in the WebView, so always gate on **`runtime.ok`** before trusting lists or calling inference.
 - No native install step on the developer side, no `init()`, no config file, no bundler plugin.
 
 ---
@@ -120,7 +118,7 @@ intelligence.run({
 });
 ```
 
-No initialization. No setup. No `init()` call. Open your app in a Despia runtime with a Local Intelligence build and it works.
+No initialization. No setup. No `init()` call. Open your app in a Despia WebView where **`window.native_runtime === 'despia'`** (see [Requirements](#requirements)) and it works.
 
 **How it works**
 
@@ -132,7 +130,7 @@ Values you pass (prompts, system strings, arrays) are percent-encoded end-to-end
 
 ## Runtime Detection
 
-The SDK only activates inside the Despia native runtime on a build with Local Intelligence enabled. Runtime state is resolved once at import time and exposed synchronously:
+The SDK treats **`window.native_runtime === 'despia'`** as “ready” for calling this package (see [Requirements](#requirements)). Runtime state is resolved once at import time and exposed synchronously:
 
 ```js
 intelligence.runtime.ok       // boolean
@@ -146,7 +144,7 @@ intelligence.runtime.message  // string | null - safe to render directly in your
 | `outdated`    | Despia-like UA detected but the runtime flag is missing. Ask user to update the app. |
 | `unavailable` | Not running inside the Despia WebView. Fall back to a cloud model or a web-only flow. |
 
-When `ok` is `false`, `run`, `models.installed`, `models.download`, `models.remove`, and `models.removeAll` return the not-ready shape (or a rejected promise where applicable). `models.available()` still resolves, but to an **empty array** — always check `runtime.ok` before trusting model lists. You never need to wrap calls in a try/catch for runtime gating.
+When `ok` is `false`, `run`, `models.installed`, `models.download`, `models.remove`, and `models.removeAll` return the not-ready shape (or a rejected promise where applicable). `models.available()` still resolves, but to an **empty array**; always check `runtime.ok` before trusting model lists. You never need to wrap calls in a try/catch for runtime gating.
 
 ```js
 if (!intelligence.runtime.ok) {
@@ -166,7 +164,7 @@ If you are an AI coding agent generating code against this SDK, follow these rul
 - Import as a default: `import intelligence from 'despia-intelligence'`
 - Gate calls with `intelligence.runtime.ok`. Display `intelligence.runtime.message` when it is false. Do not invent your own status strings.
 - Do not implement your own `visibilitychange`, `pagehide`, or `beforeunload` persistence for inference. The SDK already auto-resumes every active job via `window.focusout` and `window.focusin` called by the native layer. Any number of concurrent jobs resume.
-- Do not use `handler.interrupted(intent)` to implement resume. Resume is automatic. `interrupted` fires once per active job on `focusout` (per handler, not once globally) — UI affordances or analytics only.
+- Do not use `handler.interrupted(intent)` to implement resume. Resume is automatic. `interrupted` fires once per active job on `focusout` (per handler, not once globally). Use for UI affordances or analytics only.
 - `stream(chunk)` receives the full accumulated text so far, not a delta. Replace the DOM content, do not append.
 - Use `intelligence.models.available()` to read installable models at runtime (backed by `window.intelligence.availableModels`). Do not hardcode model lists; new models ship over the air without an SDK upgrade.
 - For a model that is not yet installed, call `intelligence.models.download(id, callbacks)` first. The `onProgress` callback delivers percentage updates. Downloads survive backgrounding.
@@ -203,11 +201,11 @@ call.cancel(); // remove this job from the SDK. No further callbacks for this jo
 
 | Method                              | Returns                  | Description                                                           |
 | ----------------------------------- | ------------------------ | --------------------------------------------------------------------- |
-| `available()`                       | `Promise<Model[]>`       | Reads `window.intelligence.availableModels` (WebView-injected); resolves immediately when `runtime.ok`. |
-| `installed()`                       | `Promise<Model[]>`       | Fires `query=installed`, then resolves when `window.intelligence.installedModels` updates (variable observer; never hangs). |
-| `download(id, { onStart, onProgress, onEnd, onError })` | `void`                   | Start a background download. Fire-and-forget; results via callbacks. |
-| `remove(id)`                        | `Promise<void>`          | Remove a specific model from the device.                              |
-| `removeAll()`                       | `Promise<void>`          | Remove every downloaded model. Useful for "clear cache" affordances.  |
+| `available()`                       | `Promise<Model[]>`       | Reads `window.intelligence.availableModels` (WebView-injected). Resolves immediately; returns **`[]`** when **`runtime.ok`** is false. |
+| `installed()`                       | `Promise` (see `index.d.ts`) | When ready: fires `query=installed`, then resolves when **`installedModels`** updates (internal variable observer; times out to **`[]`**). When not ready: resolves to the same **not-ready** shape as `run`. |
+| `download(id, { onStart, onProgress, onEnd, onError })` | `void` or not-ready      | Starts a background download when ready; fire-and-forget with callbacks. When not ready: returns the **not-ready** object (same family as `run`). |
+| `remove(id)`                        | `Promise` (see `index.d.ts`) | Remove one model when ready; when not ready, resolves to the **not-ready** shape. |
+| `removeAll()`                       | `Promise` (see `index.d.ts`) | Remove every downloaded model when ready; when not ready, resolves to the **not-ready** shape. |
 
 Each `Model` is `{ id: string; name: string; category: string }`.
 
@@ -316,7 +314,7 @@ sections.forEach((section) => {
 
 User backgrounds mid-generation. All seven jobs are saved. User returns. All seven re-fire with fresh native sessions and new IDs, each one streaming back into the correct DOM element because the handlers still capture their own `section`. Developer writes nothing for that.
 
-`handler.interrupted(intent)` is still available as a notification hook if you want to surface a "Resuming..." toast or log interrupted jobs to analytics. It fires **once per active job** on `focusout` (each job’s handler is called separately, not a single global callback). It is not used to implement resume — the SDK does that for every concurrent job automatically.
+`handler.interrupted(intent)` is still available as a notification hook if you want to surface a "Resuming..." toast or log interrupted jobs to analytics. It fires **once per active job** on `focusout` (each job’s handler is called separately, not a single global callback). It is not used to implement resume; the SDK does that for every concurrent job automatically.
 
 Whether the native layer actually runs N streams in parallel or queues them internally is a native-side concern and probably device-dependent. From the JS side, the contract is simple: every job you fire is tracked, every interrupted job comes back.
 

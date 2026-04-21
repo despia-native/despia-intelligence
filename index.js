@@ -110,8 +110,8 @@
 
   // ─── Variable observer ───────────────────────────────────────────────────────
   // Watches window.intelligence[key] for changes after a scheme call updates it.
-  // Same pattern as despia-native's observeDespiaVariable — scoped to window.intelligence.
-  // Guaranteed to resolve — never leaves a promise hanging.
+  // Same pattern as despia-native's observeDespiaVariable - scoped to window.intelligence.
+  // Guaranteed to resolve - never leaves a promise hanging.
 
   function _safeSig(val) {
     if (val === undefined) return 'u';
@@ -153,7 +153,7 @@
 
   // ─── Runtime ────────────────────────────────────────────────────────────────
   // window.native_runtime = 'despia' is injected on boot inside the Despia WebView.
-  // There is no window.intelligence_available flag — native_runtime alone gates readiness.
+  // There is no window.intelligence_available flag - native_runtime alone gates readiness.
 
   var _rt = (function () {
     if (typeof window === 'undefined') return { ok: false, status: 'unavailable', message: null };
@@ -293,9 +293,9 @@
       //
       // If the app was backgrounded while a download was in progress,
       // _pendingDownloads has the session callbacks. On reopen:
-      //   - If the download completed while backgrounded, the native layer
+      //  - If the download completed while backgrounded, the native layer
       //     replays onDownloadEnd - _downloads[modelId] must be there to receive it.
-      //   - If the download is still in progress, onDownloadProgress events resume
+      //  - If the download is still in progress, onDownloadProgress events resume
       //     flowing - _downloads[modelId] must be there to receive them.
       //
       // Merge rather than replace - in case a new download was started
@@ -320,9 +320,9 @@
 
     if (!window.intelligence) window.intelligence = {};
 
-    // ── Inference callbacks — property assignments flat on window
+    // ── Inference callbacks - property assignments flat on window
     // The native layer fires these directly on window, not on window.intelligence.
-    // chunk = full accumulated text so far — replace, do not append.
+    // chunk = full accumulated text so far - replace, do not append.
 
     window.onMLToken = function (id, chunk) {
       var job = _jobs[id];
@@ -331,7 +331,7 @@
       }
     };
 
-    // fullText = complete response string — same as last chunk, guaranteed final.
+    // fullText = complete response string - same as last chunk, guaranteed final.
     window.onMLComplete = function (id, fullText) {
       var job = _jobs[id];
       if (job) {
@@ -343,7 +343,7 @@
       }
     };
 
-    // onMLError includes jobId — used to route the error to the right job handler.
+    // onMLError includes jobId - used to route the error to the right job handler.
     window.onMLError = function (err) {
       var jobId = err && err.jobId;
       var job   = _jobs[jobId];
@@ -363,7 +363,7 @@
     });
 
     window.intelligence.onDownloadProgress(function (modelId, pct) {
-      // Native sends 0–1 float; tolerate 0–100 values if the runtime ever sends those.
+      // Native sends 0-1 float; tolerate 0-100 values if the runtime ever sends those.
       var percent = pct;
       if (typeof percent === 'number') {
         if (percent <= 1) percent = Math.round(percent * 100);
@@ -441,7 +441,7 @@
   // ─── models ─────────────────────────────────────────────────────────────────
 
   var models = {
-    // availableModels is injected by the WebView on boot — read synchronously, no scheme call.
+    // availableModels is injected by the WebView on boot - read synchronously, no scheme call.
     available: function () {
       if (!_rt.ok) return Promise.resolve([]);
       _boot();

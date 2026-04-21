@@ -29,7 +29,7 @@ Despia turns web apps into native iOS and Android apps by running them inside a 
 
 Results come back through global `window` callbacks the native layer fires directly. There is no variable injection. The `despia-native` variable-watching Promise system is not used here - intelligence results are direct function calls, not variable writes.
 
-### Runtime detection — `native_runtime` only
+### Runtime detection - `native_runtime` only
 
 ```
 window.native_runtime = 'despia'   Despia WebView runtime is active
@@ -49,7 +49,7 @@ There is no `intelligence_available` flag. Resolved once at import time.
 
 | Action | Scheme |
 |---|---|
-| Available models (catalog) | Injected as `window.intelligence.availableModels` — npm `models.available()` reads this only |
+| Available models (catalog) | Injected as `window.intelligence.availableModels` - npm `models.available()` reads this only |
 | Available models (scheme, native) | `intelligence://models?query=all` may still exist for other callers |
 | Installed models | `intelligence://models?query=installed` |
 | Download model | `intelligence://download?model=<id>` |
@@ -61,13 +61,13 @@ There is no `intelligence_available` flag. Resolved once at import time.
 | Vision (future) | `intelligence://vision?id=<uuid>&model=<id>&prompt=<text>&file=<path>` |
 | Embed (future) | `intelligence://embed?id=<uuid>&model=<id>&input=<text>` |
 
-### Native bridge — two surfaces
+### Native bridge - two surfaces
 
 **Inference (streaming):** native invokes **`window.onMLToken`**, **`window.onMLComplete`**, **`window.onMLError`** after the SDK assigns them in `_boot()` (property assignment on `window`). **`onMLError`** includes **`jobId`** for concurrent job routing.
 
 **Model lifecycle:** native exposes **registrar functions** on **`window.intelligence`** (`onDownloadStart(fn)`, etc.). `_boot()` registers SDK handlers via those calls.
 
-App lifecycle — still assigned on `window` by the native runtime (not registrars):
+App lifecycle - still assigned on `window` by the native runtime (not registrars):
 
 ```
 window.focusout()
@@ -92,7 +92,7 @@ window.intelligence.availableModels   // read synchronously; npm models.availabl
 window.intelligence.installedModels     // updated after install/remove; may still refresh via scheme
 ```
 
-`models.installed()` uses **`_observe('installedModels', …)`** (despia-native-style variable watch) after firing `intelligence://models?query=installed` — not `onInstalledModelsLoaded`.
+`models.installed()` uses **`_observe('installedModels', …)`** (despia-native-style variable watch) after firing `intelligence://models?query=installed` - not `onInstalledModelsLoaded`.
 
 Model + download + remove events (registrars used in `_boot`):
 
@@ -263,16 +263,16 @@ Run this on a **real Despia iOS and Android build** that includes Local Intellig
 
 ### Inference (`run`, `type: 'text'`)
 
-- [ ] After first `intelligence.run(...)`, **`typeof window.onMLToken === 'function'`** (and `onMLComplete`, `onMLError`) — SDK `_boot()` wired flat on `window`
+- [ ] After first `intelligence.run(...)`, **`typeof window.onMLToken === 'function'`** (and `onMLComplete`, `onMLError`) - SDK `_boot()` wired flat on `window`
 - [ ] Single job: tokens stream; **`stream` handler receives full accumulated text** each time (replace, not append semantics in UI)
-- [ ] **`complete`** fires once with final string; **`onMLError`** path if you force an error — payload includes **`jobId`** when multiple jobs exist
+- [ ] **`complete`** fires once with final string; **`onMLError`** path if you force an error - payload includes **`jobId`** when multiple jobs exist
 - [ ] **Two concurrent jobs** with different prompts: each handler only receives its job’s tokens/errors
 
 ### Models
 
 - [ ] **`await intelligence.models.available()`** matches native catalog (ids, names, categories)
 - [ ] **`await intelligence.models.installed()`** resolves after `query=installed` (empty array valid); no hung promise after 35s wait
-- [ ] **Download**: `onStart` / `onProgress` (0–100) / `onEnd` or `onError`; background app mid-download then return — progress or end still reaches the session callbacks or global `intelligence.on('download*')` listeners as designed
+- [ ] **Download**: `onStart` / `onProgress` (0-100) / `onEnd` or `onError`; background app mid-download then return. Progress or end still reaches the session callbacks or global `intelligence.on('download*')` listeners as designed
 - [ ] **Remove** / **removeAll**: promise resolves; `installedModels` updates
 
 ### Lifecycle
