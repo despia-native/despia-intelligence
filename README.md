@@ -33,7 +33,6 @@ Shipping an AI feature in a web app today means piping every prompt, every piece
 
 - `intelligence.run({ type: 'text', model, prompt }, handler)` - one call, streaming tokens back to your handler.
 - Automatic model download with progress events. Downloads continue while the app is closed via `NSURLSession` on iOS and `WorkManager` on Android.
-- Zero-config background and foreground resume. Pressing the home button mid-generation is not a bug; every in-flight job re-fires automatically when the user comes back.
 - No `init()`, no config file, no bundler plugin, no native install step.
 - Same code on iOS and Android.
 
@@ -69,7 +68,6 @@ If you maintain native code or fork this repo, **[INTERNALS.md](INTERNALS.md)** 
 - [AI Agent Rules](#ai-agent-rules)
 - [API Reference](#api-reference)
 - [Text Inference](#text-inference)
-- [Background and Return](#background-and-return)
 - [Concurrent Jobs](#concurrent-jobs)
 - [Models](#models)
 - [Download Events](#download-events)
@@ -124,7 +122,7 @@ No initialization. No setup. No `init()` call. Open your app in a Despia WebView
 
 Calling `intelligence.run()` hands your params to the Despia Native Runtime with a fresh job ID. The native layer loads the model onto whichever acceleration path is fastest for that model on the current device (Metal or Core ML on iOS, GPU or NNAPI on Android, CPU fast-path as a universal fallback), runs inference, and streams tokens back into your JavaScript handler as they are generated. The SDK routes each token to the correct handler by job ID, so running many concurrent jobs in the same page is safe.
 
-The native WebView shell (your Xcode and Android Studio Despia project) exposes the bridge as **`window.despia`**: assign the scheme string, the same idea as the older **`window.location.href = 'intelligence://…'`** bridge but **without** touching **`location`** (fewer SPA router issues). **`run`** and **`models.*`** enqueue URLs internally, then **`_fire`** applies **`window.despia = url`** one at a time with about **1ms** between writes, so two or more calls in the same moment never hit the setter concurrently in one stack frame. Native still intercepts like a navigation URL.
+The native WebView shell (your Xcode and Android Studio Despia project) exposes the bridge as **`window.despia`**: assign the scheme string, the same idea as the older **`window.location.href = 'intelligence://…'`** bridge but **without** touching **`location`** (fewer SPA router issues). `run` and `models.*` build the URL and assign it once via internal `_fire`. Native still intercepts like a navigation URL.
 
 Values you pass (prompts, system strings, arrays) are percent-encoded end-to-end, so spaces, newlines, quotes, ampersands, and unicode all survive the bridge intact. New parameters added on the native side flow through without an SDK upgrade - any extra key you put on the params object is forwarded as-is.
 
@@ -166,8 +164,6 @@ If you are an AI coding agent generating code against this SDK, follow these rul
 - Import as a default: `import intelligence from 'despia-intelligence'`
 - Gate calls with `intelligence.runtime.ok`. Display `intelligence.runtime.message` when it is false. Do not invent your own status strings.
 - Use **`intelligence.run`** / **`models`** for all scheme traffic; do not use **`window.location.href`** for **`intelligence://`** schemes (the package uses **`window.despia`** via **`_fire`**).
-- Do not implement your own `visibilitychange`, `pagehide`, or `beforeunload` persistence for inference. The SDK already auto-resumes every active job via `window.focusout` and `window.focusin` called by the native layer. Any number of concurrent jobs resume.
-- Do not use `handler.interrupted(intent)` to implement resume. Resume is automatic. `interrupted` fires once per active job on `focusout` (per handler, not once globally). Use for UI affordances or analytics only.
 - `stream(chunk)` receives the full accumulated text so far, not a delta. Replace the DOM content, do not append.
 - Use `intelligence.models.available()` to read installable models at runtime. Do not hardcode model lists; new models ship over the air without an SDK upgrade.
 - For a model that is not yet installed, call `intelligence.models.download(id, callbacks)` first. The `onProgress` callback delivers percentage updates. Downloads survive backgrounding.
@@ -185,15 +181,15 @@ Fires an inference job and wires callbacks for streaming tokens and final result
 | Parameter | Type                     | Description                                                                 |
 | --------- | ------------------------ | --------------------------------------------------------------------------- |
 | `params`  | `object`                 | Plain params object. `type` routes the call. All other keys pass through.   |
-| `handler` | `object` (optional)      | Callbacks. Any subset of `stream`, `complete`, `error`, `interrupted`.      |
+| `handler` | `object` (optional)      | Callbacks. Any subset of `stream`, `complete`, `error`.                     |
 
-Returns a call handle: `{ ok: true, intent, interrupted, cancel() }`. When the runtime is not ready, returns a compatible not-ready handle: `{ ok: false, status, message, intent: null, interrupted: false, cancel() }` where `cancel()` is a no-op. The same destructure works in both cases.
+Returns a call handle: `{ ok: true, intent, cancel() }`. When the runtime is not ready, returns a compatible not-ready handle: `{ ok: false, status, message, intent: null, cancel() }` where `cancel()` is a no-op. The same destructure works in both cases.
 
 ```js
 const call = intelligence.run({ type: 'text', model: 'qwen3-0.6b', prompt: 'Hi' }, {
   stream:   (chunk) => {},
   complete: (text)  => {}, // full final response string
-  error:    (err)   => {}, // err.code: 2 = missing id, 3 = runtime inference error
+  error:    (err)   => {}, // err.code: 2 = missing id, 3 = inference error, 7 = model not installed
 });
 
 call.intent;  // original params object, storable, re-firable
@@ -263,41 +259,9 @@ call.cancel(); // SDK drops the job. No further stream or complete callbacks for
 
 ---
 
-## Background and Return
-
-Inference sessions do not survive backgrounding. The native inference context is torn down when iOS or Android suspend the WebView. **The SDK handles this for you.** When the user hits home, opens another app, and comes back, every in-flight job is re-fired automatically with the same params and the same handler. Zero developer code, any number of concurrent jobs.
-
-```js
-intelligence.run({
-  type:   'text',
-  model:  'qwen3-0.6b',
-  prompt: 'Write me a long essay on TCP.',
-  stream: true,
-}, {
-  stream:   (chunk) => output.textContent = chunk,
-  complete: (text)  => save(text),
-});
-```
-
-User hits home, pays a friend in their banking app, comes back. Stream restarts. No button, no resume logic, no state to serialise.
-
-**How it works under the hood**
-
-The native layer fires `window.focusout` directly from `applicationDidEnterBackground` (iOS) and `onPause` (Android). The JS thread is fully alive at that point, before any WebView suspension. The SDK uses that window to copy every active job into an internal `_pending` map. When the app returns, the native layer fires `window.focusin` and the SDK drains `_pending` by re-firing `run()` for each entry with a fresh native session and a new job ID. The standard `visibilitychange` event is unreliable on both platforms in this scenario because it competes with the OS's process suspension; the native lifecycle hooks run synchronously before suspension begins.
-
-**Rules**
-
-- Jobs that **complete normally** never re-fire. Auto-resume only kicks in for genuinely interrupted streams.
-- Jobs that **error out** never re-fire. Failed jobs are removed from `_pending` by `onMLError`.
-- Jobs you **explicitly `.cancel()`** never re-fire.
-- **Any number of concurrent jobs** all resume. Seven streams in flight at background? All seven come back.
-- **Downloads** follow a different rule - they continue natively while the app is closed, and the SDK keeps their session callbacks alive across background so the progress bar and `onEnd` in the component that started the download still fire on return. See [Download Events](#download-events).
-
----
-
 ## Concurrent Jobs
 
-Concurrent inference is a single-line API. Fire as many `run()` calls as you need. Each one has its own handler, its own job ID, its own entry in the SDK's active-job registry, and its own slot in `_pending` if the user backgrounds before it finishes.
+Fire as many `run()` calls as you need. Each one has its own handler and its own job ID; native streams are routed back to the correct handler.
 
 ```js
 const sections = ['intro', 'history', 'handshake', 'loss', 'congestion', 'vs-udp', 'conclusion'];
@@ -315,11 +279,9 @@ sections.forEach((section) => {
 });
 ```
 
-User backgrounds mid-generation. All seven jobs are saved. User returns. All seven re-fire with fresh native sessions and new IDs, each one streaming back into the correct DOM element because the handlers still capture their own `section`. Developer writes nothing for that.
+Whether the native layer actually runs N streams in parallel or queues them internally is a native-side concern and probably device-dependent. From the JS side, the contract is simple: every job you fire is tracked, native streams back to the right handler by job id.
 
-`handler.interrupted(intent)` is still available as a notification hook if you want to surface a "Resuming..." toast or log interrupted jobs to analytics. It fires **once per active job** on `focusout` (each job’s handler is called separately, not a single global callback). It is not used to implement resume; the SDK does that for every concurrent job automatically.
-
-Whether the native layer actually runs N streams in parallel or queues them internally is a native-side concern and probably device-dependent. From the JS side, the contract is simple: every job you fire is tracked, every interrupted job comes back.
+> **Backgrounding.** Inference sessions do not survive when the OS suspends the WebView, and this SDK does **not** auto-resume them. If you need resume semantics, listen to native lifecycle hooks yourself and re-call `intelligence.run(call.intent, handler)` for any in-flight calls.
 
 ---
 
@@ -394,15 +356,9 @@ intelligence.once('downloadEnd', (modelId) => showFirstDownloadBadge());
 
 The per-call `download(id, callbacks)` handlers are scoped to that specific download in that specific session - ideal for the progress bar and loading state on the settings page. Global events (`intelligence.on(...)`) fire for every download regardless of who started it - ideal for app-wide state like a badge in the tab bar or flipping a model from "downloading" to "installed" in your state store.
 
-**Backgrounding is handled for you.** The user can hit home mid-download, switch to another app, come back, and the progress bar keeps moving. Downloads run natively via `NSURLSession` on iOS and `WorkManager` on Android, so the transfer itself never pauses when the app goes inactive. The SDK keeps the session callbacks registered across the background/foreground cycle, so:
+**Backgrounding.** Downloads run natively via `NSURLSession` on iOS and `WorkManager` on Android, so the transfer itself never pauses when the app goes inactive. As long as the JS context stays alive across the background/foreground cycle, per-call session callbacks remain registered and fire on return. `onProgress` is not replayed for time spent backgrounded — the bar freezes at whatever percentage it was when the user left, and resumes from the next real progress tick on return.
 
-- If the download is still in progress on return, `onProgress` resumes firing on the same handler you passed to `download()`.
-- If the download finished while the app was away, `onEnd` fires on return - routed to the original session handler.
-- If it failed while the app was away, `onError` fires on return with the reason.
-
-One caveat: `onProgress` is not replayed for time spent backgrounded. The bar freezes at whatever percentage it was when the user left, and resumes from the next real progress tick after return. This is correct and expected; there is no event to fake in between.
-
-**If the app is fully killed.** Session callbacks live in JS memory, so a force-quit clears them. The download itself keeps going natively (that is the whole point of `NSURLSession` and `WorkManager`), and on relaunch the native layer replays `onDownloadEnd` / `onDownloadError`. Session handlers from the previous process are gone, but global events still fire - which is why they are the right place for persistent state.
+**If the app is fully killed.** Session callbacks live in JS memory, so a force-quit clears them. The download itself keeps going natively (that is the whole point of `NSURLSession` and `WorkManager`), and on relaunch the native layer replays `onDownloadEnd` / `onDownloadError` to whatever listeners are wired at that point. Use global events (`intelligence.on('download*', …)`) for persistent state that needs to outlive a process restart.
 
 ```js
 intelligence.on('downloadEnd', (modelId) => markInstalled(modelId));

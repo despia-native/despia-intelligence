@@ -8,9 +8,8 @@ export type Runtime =
 
 /** Not-ready branch matches CallHandle shape so `if (!call.ok)` / `call.cancel()` work the same. */
 export type NotReady = Extract<Runtime, { ok: false }> & {
-  intent:      null
-  interrupted: false
-  cancel():    void
+  intent:   null
+  cancel(): void
 }
 
 export type ModelCategory =
@@ -43,18 +42,15 @@ export interface Params {
 
 export interface Handler {
   /** `chunk` is full accumulated text; replace UI, do not append. */
-  stream?:      (chunk: string) => void
-  complete?:    (text: string) => void
-  error?:       (err: { code: number; message: string }) => void
-  /** Once per job on focusout; resume is automatic (UI/analytics only). */
-  interrupted?: (intent: Params) => void
+  stream?:   (chunk: string) => void
+  complete?: (text: string) => void
+  error?:    (err: { code: number; message: string }) => void
 }
 
 export interface CallHandle {
-  ok:          true
-  intent:      Params
-  interrupted: boolean
-  cancel():    void
+  ok:       true
+  intent:   Params
+  cancel(): void
 }
 
 type DownloadEvents = {

@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>despia-intelligence demo</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: #333;
+        }
+        .container { max-width: 600px; margin: 0 auto; }
+        .header { text-align: center; color: white; margin-bottom: 30px; }
+        .header h1 { font-size: 32px; font-weight: 700; margin-bottom: 10px; }
+        .header p { font-size: 16px; opacity: 0.9; }
+        .card {
+            background: white;
+            border-radius: 16px;
+            padding: 24px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+        }
+        .form-group { margin-bottom: 20px; }
+        label { display: block; font-weight: 600; margin-bottom: 8px; color: #555; font-size: 14px; }
+        input, textarea, select {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 16px;
+            font-family: inherit;
+            background: white;
+            transition: border-color 0.3s;
+        }
+        input:focus, textarea:focus, select:focus { outline: none; border-color: #667eea; }
+        textarea { resize: vertical; min-height: 100px; }
+        .button {
+            width: 100%;
+            padding: 16px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+        }
+        .button:active { transform: translateY(1px); }
+        .button:disabled { background: #ccc; cursor: not-allowed; box-shadow: none; }
+        .progress-bar-container { background: rgba(255, 255, 255, 0.3); border-radius: 8px; height: 8px; overflow: hidden; }
+        .progress-bar { height: 100%; background: white; border-radius: 8px; width: 0%; transition: width 0.3s ease; }
+        .streaming-indicator { display: none; align-items: center; gap: 8px; margin-top: 16px; font-size: 14px; color: #667eea; font-weight: 600; }
+        .streaming-indicator.active { display: flex; }
+        .streaming-dot { width: 8px; height: 8px; background: #667eea; border-radius: 50%; animation: pulse 1s ease-in-out infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.8); } }
+        .jobs-container { margin-top: 20px; }
+        .job-card { background: #f8f9fa; border-radius: 12px; padding: 16px; margin-bottom: 12px; border-left: 4px solid #667eea; }
+        .job-card.error      { border-left-color: #d32f2f; background: #ffe0e0; }
+        .job-card.complete   { border-left-color: #2e7d32; background: #e8f5e9; }
+        .job-card.streaming  { border-left-color: #ff9800; }
+        .job-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+        .job-id { font-size: 11px; color: #999; font-family: monospace; }
+        .job-status { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; }
+        .job-status.streaming { background: #fff3e0; color: #e65100; }
+        .job-status.complete  { background: #e8f5e9; color: #2e7d32; }
+        .job-status.error     { background: #ffe0e0; color: #d32f2f; }
+        .job-prompt   { font-size: 12px; color: #777; margin-bottom: 8px; font-style: italic; }
+        .job-response { white-space: pre-wrap; word-wrap: break-word; line-height: 1.6; color: #333; font-size: 14px; }
+        .job-response .cursor { display: inline-block; width: 2px; height: 1em; background: #667eea; animation: blink 0.7s step-end infinite; vertical-align: text-bottom; margin-left: 2px; }
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+        .job-stats { display: flex; gap: 12px; margin-top: 8px; font-size: 11px; color: #999; }
+        .info-box { background: #ede7f6; border-left: 4px solid #667eea; padding: 12px; border-radius: 4px; margin-bottom: 20px; font-size: 14px; color: #4527a0; }
+        .clear-all-btn { background: #ff6b6b; color: white; border: none; padding: 8px 16px; border-radius: 6px; font-size: 12px; cursor: pointer; font-weight: 600; }
+        .runtime-pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+        .runtime-pill.ready       { background: #e8f5e9; color: #2e7d32; }
+        .runtime-pill.outdated    { background: #fff3e0; color: #e65100; }
+        .runtime-pill.unavailable { background: #ffe0e0; color: #d32f2f; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>despia-intelligence</h1>
+            <p>SDK demo &mdash; on-device inference via the Despia WebView bridge</p>
+        </div>
+
+        <div class="card">
+            <div class="info-box">
+                Loads <code>./index.js</code> directly. Runtime: <span id="runtimePill" class="runtime-pill">checking…</span>
+            </div>
+
+            <div class="form-group">
+                <label for="inferenceModel">Model *</label>
+                <select id="inferenceModel" required>
+                    <option value="" disabled selected>Load installed models first</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label for="system">System Instructions (optional)</label>
+                <input type="text" id="system" placeholder="e.g. You are a helpful assistant…">
+            </div>
+
+            <div class="form-group">
+                <label for="prompt">Prompt *</label>
+                <textarea id="prompt" placeholder="Ask your question here…" required></textarea>
+            </div>
+
+            <button class="button" onclick="queryLocalAI()">Send Streaming Request</button>
+        </div>
+
+        <div class="card">
+            <h3 style="margin-bottom: 12px; color: #555;">Available Models</h3>
+            <p style="font-size: 14px; color: #777; margin-bottom: 12px;">
+                Calls <code style="background: #f0f0f0; padding: 2px 6px; border-radius: 4px;">intelligence.models.available()</code>.
+            </p>
+            <button class="button" onclick="loadAvailableModels()">Load Available Models</button>
+            <div id="modelsArea" style="margin-top: 16px; display: none;">
+                <pre id="modelsResponse" style="background: #f8f9fa; padding: 12px; border-radius: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; white-space: pre-wrap; word-wrap: break-word; color: #333;"></pre>
+            </div>
+        </div>
+
+        <div class="card">
+            <h3 style="margin-bottom: 12px; color: #555;">Download Model</h3>
+            <p style="font-size: 14px; color: #777; margin-bottom: 12px;">
+                Calls <code style="background: #f0f0f0; padding: 2px 6px; border-radius: 4px;">intelligence.models.download(id, callbacks)</code>. Load available models first.
+            </p>
+            <div class="form-group">
+                <label for="modelSelect">Model</label>
+                <select id="modelSelect">
+                    <option value="">— Load available models first —</option>
+                </select>
+            </div>
+            <button class="button" id="downloadBtn" onclick="downloadSelectedModel()">Download Model</button>
+            <div id="downloadBanner" style="display: none; margin-top: 16px; padding: 12px; background: #ede7f6; border-radius: 8px; border-left: 4px solid #667eea;">
+                <div style="display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 13px; color: #4527a0; font-weight: 600;">
+                    <span id="downloadLabel">Downloading…</span>
+                    <span id="downloadPercent">0%</span>
+                </div>
+                <div class="progress-bar-container"><div class="progress-bar" id="downloadBar"></div></div>
+            </div>
+            <div id="downloadLog" style="margin-top: 12px; font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #555; max-height: 160px; overflow-y: auto;"></div>
+            <div style="margin-top: 12px; font-size: 13px; color: #555;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 6px;">
+                    <strong>Installed models:</strong>
+                    <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                        <button onclick="loadInstalledModels()" style="background: #667eea; color: white; border: none; padding: 6px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; font-weight: 600;">Load</button>
+                        <button onclick="removeSelectedModel()" style="background: #ff9800; color: white; border: none; padding: 6px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; font-weight: 600;">Remove Selected</button>
+                        <button onclick="removeAllModels()" style="background: #d32f2f; color: white; border: none; padding: 6px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; font-weight: 600;">Remove All</button>
+                    </div>
+                </div>
+                <pre id="installedModelsResponse" style="background: #f8f9fa; padding: 8px; border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; white-space: pre-wrap; word-wrap: break-word; color: #333; margin-top: 6px;">(not loaded yet)</pre>
+            </div>
+        </div>
+
+        <div class="card">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                <h3 style="color: #555;">Responses</h3>
+                <button class="clear-all-btn" onclick="clearAll()">Clear All</button>
+            </div>
+            <div class="streaming-indicator" id="streamingIndicator">
+                <div class="streaming-dot"></div>
+                <span id="activeJobsLabel">Streaming…</span>
+            </div>
+            <div class="jobs-container" id="jobsContainer">
+                <p style="color: #999; font-size: 14px;" id="emptyState">No requests sent yet.</p>
+            </div>
+        </div>
+    </div>
+
+    <script src="./index.js"></script>
+    <script>
+        var intelligence = window.intelligence;
+
+        var jobs = {};
+        var activeJobs = 0;
+
+        function escapeHtml(text) {
+            var div = document.createElement('div');
+            div.appendChild(document.createTextNode(text));
+            return div.innerHTML;
+        }
+
+        function setRuntimePill() {
+            var pill = document.getElementById('runtimePill');
+            var rt = intelligence.runtime;
+            pill.textContent = rt.status;
+            pill.className = 'runtime-pill ' + rt.status;
+        }
+        setRuntimePill();
+
+        function updateStreamingIndicator() {
+            var indicator = document.getElementById('streamingIndicator');
+            var label = document.getElementById('activeJobsLabel');
+            if (activeJobs > 0) {
+                indicator.classList.add('active');
+                label.textContent = activeJobs + ' active request' + (activeJobs > 1 ? 's' : '') + '…';
+            } else {
+                indicator.classList.remove('active');
+            }
+        }
+
+        function logLine(target, line) {
+            var log = document.getElementById(target);
+            var row = document.createElement('div');
+            row.textContent = '[' + new Date().toLocaleTimeString() + '] ' + line;
+            log.insertBefore(row, log.firstChild);
+        }
+
+        function renderInstalled(list) {
+            var pre = document.getElementById('installedModelsResponse');
+            pre.textContent = list && list.length ? JSON.stringify(list, null, 2) : '(no installed models)';
+
+            var select = document.getElementById('inferenceModel');
+            var previous = select.value;
+            select.innerHTML = '';
+            if (!list || list.length === 0) {
+                var opt = document.createElement('option');
+                opt.value = ''; opt.disabled = true; opt.selected = true;
+                opt.textContent = 'No installed models';
+                select.appendChild(opt);
+                return;
+            }
+            var placeholder = document.createElement('option');
+            placeholder.value = ''; placeholder.disabled = true;
+            placeholder.textContent = 'Select model…';
+            select.appendChild(placeholder);
+            list.forEach(function (m) {
+                var o = document.createElement('option');
+                o.value = m.id;
+                o.textContent = (m.name || m.id) + ' (' + m.id + ')';
+                select.appendChild(o);
+            });
+            var keep = list.some(function (m) { return m.id === previous; });
+            select.value = keep ? previous : '';
+            if (!keep) select.querySelector('option[value=""]').selected = true;
+        }
+
+        function renderAvailable(list) {
+            document.getElementById('modelsArea').style.display = 'block';
+            document.getElementById('modelsResponse').textContent = JSON.stringify(list, null, 2);
+            var select = document.getElementById('modelSelect');
+            select.innerHTML = '';
+            list.forEach(function (m) {
+                var o = document.createElement('option');
+                o.value = m.id;
+                o.textContent = m.name + ' (' + m.id + ')';
+                select.appendChild(o);
+            });
+        }
+
+        function loadAvailableModels() {
+            intelligence.models.available().then(renderAvailable);
+        }
+
+        function loadInstalledModels() {
+            intelligence.models.installed().then(function (res) {
+                if (Array.isArray(res)) renderInstalled(res);
+                else logLine('downloadLog', 'installed() not ready: ' + (res && res.status));
+            });
+        }
+
+        function downloadSelectedModel() {
+            var id = document.getElementById('modelSelect').value;
+            if (!id) { alert('Load available models first and pick one.'); return; }
+            var btn = document.getElementById('downloadBtn');
+            var banner = document.getElementById('downloadBanner');
+            var bar = document.getElementById('downloadBar');
+            var pct = document.getElementById('downloadPercent');
+            var lbl = document.getElementById('downloadLabel');
+
+            banner.style.display = 'block';
+            btn.disabled = true;
+            bar.style.width = '0%'; pct.textContent = '0%'; lbl.textContent = 'Downloading ' + id + '…';
+            logLine('downloadLog', 'download(' + id + ')');
+
+            intelligence.models.download(id, {
+                onStart: function () {
+                    logLine('downloadLog', 'onStart(' + id + ')');
+                },
+                onProgress: function (p) {
+                    bar.style.width = p + '%'; pct.textContent = p + '%';
+                },
+                onEnd: function () {
+                    bar.style.width = '100%'; pct.textContent = '100%'; lbl.textContent = 'Done: ' + id;
+                    btn.disabled = false;
+                    logLine('downloadLog', 'onEnd(' + id + ')');
+                    loadInstalledModels();
+                },
+                onError: function (err) {
+                    btn.disabled = false;
+                    logLine('downloadLog', 'onError(' + id + ', "' + err + '")');
+                },
+            });
+        }
+
+        function removeSelectedModel() {
+            var id = document.getElementById('modelSelect').value;
+            if (!id) { alert('Load available models first and pick one.'); return; }
+            intelligence.models.remove(id).then(function () {
+                logLine('downloadLog', 'remove ok: ' + id);
+                loadInstalledModels();
+            }, function (err) {
+                logLine('downloadLog', 'remove error: ' + id + ' — ' + err.message);
+            });
+        }
+
+        function removeAllModels() {
+            if (!confirm('Really remove ALL installed models?')) return;
+            intelligence.models.removeAll().then(function () {
+                logLine('downloadLog', 'removeAll ok');
+                loadInstalledModels();
+            }, function (err) {
+                logLine('downloadLog', 'removeAll error: ' + err.message);
+            });
+        }
+
+        function queryLocalAI() {
+            var system = document.getElementById('system').value.trim();
+            var prompt = document.getElementById('prompt').value.trim();
+            var model = document.getElementById('inferenceModel').value;
+            if (!model) { alert('Please select a model (load installed models first).'); return; }
+            if (!prompt) { alert('Please enter a prompt!'); return; }
+
+            var jobId = 'job_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+            jobs[jobId] = { startTime: Date.now(), chunkCount: 0 };
+            activeJobs++;
+
+            var container = document.getElementById('jobsContainer');
+            var empty = document.getElementById('emptyState');
+            if (empty) empty.remove();
+
+            var card = document.createElement('div');
+            card.id = 'job-' + jobId;
+            card.className = 'job-card streaming';
+            card.innerHTML =
+                '<div class="job-header">' +
+                    '<span class="job-id">' + escapeHtml(jobId) + '</span>' +
+                    '<span class="job-status streaming">Waiting…</span>' +
+                '</div>' +
+                '<div class="job-prompt">' + escapeHtml(prompt) + '</div>' +
+                '<div class="job-response"><span class="cursor"></span></div>' +
+                '<div class="job-stats"></div>';
+            container.insertBefore(card, container.firstChild);
+            updateStreamingIndicator();
+
+            intelligence.run(
+                { type: 'text', model: model, prompt: prompt, system: system || undefined, stream: true },
+                {
+                    stream: function (chunk) {
+                        var job = jobs[jobId]; if (!job) return;
+                        job.chunkCount++;
+                        var el = document.getElementById('job-' + jobId); if (!el) return;
+                        el.querySelector('.job-status').className = 'job-status streaming';
+                        el.querySelector('.job-status').textContent = 'Streaming';
+                        el.querySelector('.job-response').innerHTML = escapeHtml(chunk) + '<span class="cursor"></span>';
+                        var elapsed = ((Date.now() - job.startTime) / 1000).toFixed(1);
+                        el.querySelector('.job-stats').innerHTML =
+                            '<span>Chunks: ' + job.chunkCount + '</span><span>Time: ' + elapsed + 's</span>';
+                    },
+                    complete: function (full) {
+                        activeJobs = Math.max(0, activeJobs - 1);
+                        var el = document.getElementById('job-' + jobId); if (!el) return;
+                        el.className = 'job-card complete';
+                        el.querySelector('.job-status').className = 'job-status complete';
+                        el.querySelector('.job-status').textContent = 'Done';
+                        el.querySelector('.job-response').textContent = full;
+                        var job = jobs[jobId];
+                        if (job) {
+                            var elapsed = ((Date.now() - job.startTime) / 1000).toFixed(1);
+                            el.querySelector('.job-stats').innerHTML =
+                                '<span>Chunks: ' + job.chunkCount + '</span><span>Time: ' + elapsed + 's</span>';
+                        }
+                        updateStreamingIndicator();
+                    },
+                    error: function (err) {
+                        activeJobs = Math.max(0, activeJobs - 1);
+                        var el = document.getElementById('job-' + jobId); if (!el) return;
+                        el.className = 'job-card error';
+                        el.querySelector('.job-status').className = 'job-status error';
+                        el.querySelector('.job-status').textContent = 'Error';
+                        el.querySelector('.job-response').textContent = '[' + err.code + '] ' + err.message;
+                        updateStreamingIndicator();
+                    },
+                },
+            );
+        }
+
+        function clearAll() {
+            var container = document.getElementById('jobsContainer');
+            container.innerHTML = '<p style="color: #999; font-size: 14px;" id="emptyState">No requests sent yet.</p>';
+            jobs = {};
+            activeJobs = 0;
+            updateStreamingIndicator();
+        }
+
+        document.getElementById('prompt').addEventListener('keydown', function (e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                queryLocalAI();
+            }
+        });
+
+        window.addEventListener('load', function () {
+            console.log('despia-intelligence demo loaded; runtime =', intelligence.runtime);
+        });
+    </script>
+</body>
+</html>

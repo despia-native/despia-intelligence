@@ -7,7 +7,7 @@ Internal documentation for maintainers and native integrators. Not published on 
 - [Package maintenance](#package-maintenance)
   - [What this package is](#what-this-package-is)
   - [How the native bridge works](#how-the-native-bridge-works)
-  - [App lifecycle](#app-lifecycle)
+  - [Runtime detection](#runtime-detection)
   - [TYPES config](#types-config---single-source-of-truth)
   - [Internal state reference](#internal-state-reference)
   - [Rules](#rules---non-negotiable)
@@ -15,11 +15,6 @@ Internal documentation for maintainers and native integrators. Not published on 
   - [Shipping checklist - new type](#shipping-checklist---new-type)
 - [Raw WebView bridge reference](#raw-webview-bridge-reference)
 - [Future ideas (not shipped)](#future-ideas-not-shipped)
-  - [Multi-modal - attach files](#multi-modal---attach-files)
-  - [Native file picker](#native-file-picker)
-  - [Stacking - text to speech per sentence](#stacking---text-to-speech-per-sentence)
-  - [Future model catalogue](#future-model-catalogue)
-  - [Shipping checklist - publishing an idea](#shipping-checklist---publishing-an-idea)
 
 ---
 
@@ -27,29 +22,35 @@ Internal documentation for maintainers and native integrators. Not published on 
 
 ### What this package is
 
-A thin wrapper around the Despia Local Intelligence WebView bridge. It does five things and nothing else:
+A thin wrapper around the Despia Local Intelligence WebView bridge. It does three things and nothing else:
 
-1. Serialises params to an `intelligence://` URL and enqueues **`window.despia = url`** with a **~1ms** gap between writes via internal **`_fire`** (same surface as the old **`location.href`** bridge, without mutating **`location`**).
-2. Generates and manages job IDs invisibly
-3. Routes native `window` callbacks to the right handler
-4. Auto-resumes every interrupted job on app return via `window.focusout` / `window.focusin`
-5. Persists download session callbacks across background so `onProgress` keeps flowing and `onEnd` fires to the right handler on reopen
+1. Serialises params to an `intelligence://` URL and assigns it to **`window.despia`** in `_fire`. One assignment per call. No queue, no `iframe`, no `location.href`.
+2. Generates and manages job IDs invisibly.
+3. Wires native callbacks on **`window.intelligence.*`** at module load and routes them to per-call handlers / event listeners.
 
-It does not restrict what the native system can do. Adding a new scheme route requires zero changes to any function - only the `TYPES` config at the top of `index.js`.
+It does not restrict what the native runtime can do. Adding a new scheme route requires zero changes to any function — only the `TYPES` config at the top of `index.js`.
 
 ---
 
 ### How the native bridge works
 
-Schemes are delivered with `window.despia` (the SDK uses a FIFO queue with ~1ms between writes inside `_fire`), not `location.href`. Native intercepts like navigation (iOS `decidePolicyFor`, Android `shouldOverrideUrlLoading`). Callbacks live on `window.intelligence` (native calls them directly). Full parameters, flows, and tables are in [Raw WebView bridge reference](#raw-webview-bridge-reference) below.
+**JS → native:** `_fire(url)` does a single `window.despia = url`. Native intercepts the assignment (iOS `decidePolicyFor`, Android `shouldOverrideUrlLoading`).
 
-### Runtime detection - `native_runtime` only
+**Native → JS:** native calls functions on `window.intelligence` directly (e.g. `window.intelligence.onMLToken(id, chunk)`). The SDK assigns those functions **eagerly at module load** — never lazily inside the first `run()` call — so unsolicited pushes (catalogue at app start, etc.) are never dropped.
+
+The UMD wrapper merges the API onto `window.intelligence` instead of overwriting it, so the native callback functions installed during factory execution remain in place after the module finishes loading. Anything that mutates `window.intelligence` directly must do the same.
+
+Full scheme list and callback signatures are in [Raw WebView bridge reference](#raw-webview-bridge-reference).
+
+---
+
+### Runtime detection
 
 ```
-window.native_runtime = 'despia'   Despia WebView runtime is active
+window.native_runtime = 'despia'   // Despia WebView runtime is active
 ```
 
-There is no `intelligence_available` flag. Resolved once at import time.
+Resolved once at import time. There is no `intelligence_available` flag.
 
 | `native_runtime` | `runtime.status` | `ok` |
 |---|---|---|
@@ -57,78 +58,19 @@ There is no `intelligence_available` flag. Resolved once at import time.
 | not set, UA includes `'despia'` | `'outdated'` | `false` |
 | not set, UA clean | `'unavailable'` | `false` |
 
-`window.__DESPIA_UA_OVERRIDE = true` before import forces `hasUA = true` for white-label builds with a custom user agent. Not publicly documented.
-
-### App lifecycle
-
-Text, transcription, and audio inference sessions do not survive app backgrounding. The native layer owns the session and tears it down before suspension. The SDK re-fires every interrupted job automatically when the app returns.
-
-**Why not `visibilitychange`**
-
-The original SDK used `document.addEventListener('visibilitychange', ...)`. It was unreliable:
-
-- iOS suspends the JS thread almost immediately on background; `visibilitychange` handlers often did not execute before suspension. `applicationDidEnterBackground` in Swift fires before JS gets any event.
-- On Android, `visibilitychange` timing is inconsistent across WebView implementations and versions. Can be delayed seconds or not fire at all.
-
-**Why `focusout` / `focusin` works**
-
-These are not DOM events - they are direct native-to-JS function calls that Despia invokes from inside the OS lifecycle callbacks, synchronously, before any suspension. The JS context is provably alive. The save-state and resume windows are guaranteed.
-
-**Auto-resume semantics**
-
-On `focusout`, every entry in `_jobs` is copied into `_pending`, then `_jobs` is cleared. `handler.interrupted(intent)` is also fired per active job for backwards compatibility and UI affordances like a "Resuming..." toast. It is no longer required to implement resume.
-
-On `focusin`, `_pending` is swapped to a local and cleared in a single step, then each saved entry is re-fired via `run(params, handler)`. Swap-before-iterate means a `cancel()` landed during the resume loop cannot re-queue itself.
-
-Four things remove a job from `_pending`:
-
-1. `onMLComplete` - completed cleanly, never re-fires
-2. `onMLError` - errored, never retries
-3. `call.cancel()` - explicitly stopped, never resumes
-4. The `focusin` drain itself
-
-**Downloads are different from inference**
-
-Downloads continue natively via NSURLSession (iOS) and WorkManager (Android) - they do not die on background, and we do not re-fire them. The native layer replays `onDownloadEnd` and `onDownloadError` on reopen but never replays `onDownloadProgress`.
-
-The only problem worth solving at the SDK level is keeping the JS-side session callbacks alive across background so the replayed `onDownloadEnd` can route to `cb.onEnd()` instead of being silently dropped.
-
-- On `focusout`, every entry in `_downloads` is copied into `_pendingDownloads`. `_downloads` is intentionally NOT cleared so a fast background/foreground cycle keeps working without any action.
-- On `focusin`, `_pendingDownloads` is merged back into `_downloads` (only slots that are not already present, to cover the edge case of a new download started between `focusout` and `focusin`), then `_pendingDownloads` is cleared.
-- `onDownloadEnd` and `onDownloadError` delete from both `_downloads` and `_pendingDownloads` so a completed or failed download never resurrects on a later `focusin`.
-
+---
 
 ### TYPES config - single source of truth
 
-The only thing that needs editing to add or enable a type. Lives at the top of `index.js`.
+Lives at the top of `index.js`. Adding or enabling a route only touches this object.
 
 ```js
 var TYPES = {
-  "text": {
-    "route":   "text",
-    "enabled": true,
-    "params":  ["model", "prompt", "system", "stream", "file", "filepicker"]
-  },
-  "transcription": {
-    "route":   "microphone",
-    "enabled": false,
-    "params":  ["model"]
-  },
-  "audio": {
-    "route":   "audio",
-    "enabled": false,
-    "params":  ["model", "prompt", "voice", "response", "file", "filepicker"]
-  },
-  "vision": {
-    "route":   "vision",
-    "enabled": false,
-    "params":  ["model", "prompt", "file", "filepicker"]
-  },
-  "embed": {
-    "route":   "embed",
-    "enabled": false,
-    "params":  ["model", "input"]
-  }
+  text:          { route: 'text',       enabled: true,  params: ['model', 'prompt', 'system', 'stream', 'file', 'filepicker'] },
+  transcription: { route: 'microphone', enabled: false, params: ['model'] },
+  audio:         { route: 'audio',      enabled: false, params: ['model', 'prompt', 'voice', 'response', 'file', 'filepicker'] },
+  vision:        { route: 'vision',     enabled: false, params: ['model', 'prompt', 'file', 'filepicker'] },
+  embed:         { route: 'embed',      enabled: false, params: ['model', 'input'] },
 };
 ```
 
@@ -136,24 +78,11 @@ var TYPES = {
 |---|---|
 | `route` | The `intelligence://` route segment |
 | `enabled` | `false` = throws a clear error. `true` = live |
-| `params` | Informational only - not validated. Any key still passes through |
+| `params` | Informational only — not validated. Any key still passes through |
 
-### To enable a type when native ships it
+**To enable a type when native ships it:** flip `enabled` to `true`, update the `type` union in `index.d.ts`, add a usage example to `README.md`, bump minor version.
 
-1. Flip `"enabled": false` → `"enabled": true`
-2. Update `type` union in `index.d.ts`
-3. Add usage example to `README.md`
-4. Bump minor version in `package.json`
-
-No other changes needed anywhere.
-
-### To add a brand new type
-
-1. Add entry to `TYPES` with `"enabled": false`
-2. Confirm with iOS/Android team: route name, which callbacks it fires, result shape
-3. Flip to `true` when confirmed, update `index.d.ts` and `README.md`, bump version
-
-### Error messages
+**Error messages:**
 
 ```
 [despia-intelligence] Unknown type: "xyz". Supported: text
@@ -163,22 +92,19 @@ No other changes needed anywhere.
 → type in TYPES but enabled is false
 ```
 
-The supported list is generated dynamically - always accurate as types are enabled.
-
 ---
 
 ### Internal state reference
 
 | Variable | Type | Purpose |
 |---|---|---|
-| `_jobs` | `{}` | `jobId → { handler, params }`. Active inference jobs. Deleted on complete, error, cancel. Cleared on `focusout`. |
-| `_pending` | `{}` | `jobId → { handler, params }`. Jobs interrupted by app background. Populated on `focusout`, drained and re-fired on `focusin`. Deleted on complete, error, cancel. |
-| `_downloads` | `{}` | `modelId → session callbacks`. Active downloads. Not cleared on `focusout`. Deleted on end or error. |
-| `_pendingDownloads` | `{}` | `modelId → session callbacks`. Mirrors `_downloads` across background. Populated on `focusout`, merged back into `_downloads` on `focusin`, then cleared. Also deleted on end or error so completed downloads never resurrect. |
+| `_jobs` | `{}` | `jobId → { handler }`. Active inference jobs. Deleted on complete, error, cancel. |
+| `_downloads` | `{}` | `modelId → session callbacks`. Active downloads. Deleted on `onDownloadEnd` / `onDownloadError`. |
 | `_removes` | `{}` | `modelId → { resolve, reject }`. Pending remove promises. |
 | `_removeAll` | `null \| object` | Pending removeAll promise. One at a time. |
-| `_booted` | `boolean` | Guards `_boot()`. Callbacks wired once only. |
-| `_ev` | `{}` | `event → fn[]`. Global event emitter. |
+| `_availableWaiters` | `[]` | Resolvers waiting for `onAvailableModelsLoaded`. Drained on each callback fire. |
+| `_installedWaiters` | `[]` | Resolvers waiting for `onInstalledModelsLoaded`. Drained on each callback fire. |
+| `_ev` | `{}` | `event → fn[]`. Internal emitter for `downloadStart` / `downloadProgress` / `downloadEnd` / `downloadError`. |
 | `TYPES` | `{}` | Config. Single source of truth for type support. |
 
 ---
@@ -186,213 +112,89 @@ The supported list is generated dynamically - always accurate as types are enabl
 ### Rules - non-negotiable
 
 - No dependencies. No build step. No bundler. No ESM-only exports.
-- No `console.log` or noisy logging in normal paths. The only exception is `console.error('[despia-intelligence] Despia command failed:', e)` when assigning to `window.despia` throws inside `_fire` (native setter failure).
-- No retry logic - the native layer handles retries.
-- No `init()`, `setup()`, or `configure()`. Boot is lazy on first `run()`.
-- No `Promise` polyfills - target environment is the Despia WebView which supports ES6+ natively. The UMD wrapper and ES5 style are for module system compatibility only, not for old browsers.
-- Do not add stubs for future types. They live in `TYPES` with `enabled: false`.
-- Do not rename internals: `_fire`, `_build`, `_uuid`, `TYPES`, `_supported_list`, `_rt`, `_nr`, `_ev`, `_emit`, `_on`, `_off`, `_once`, `_jobs`, `_pending`, `_downloads`, `_pendingDownloads`, `_removes`, `_removeAll`, `_booted`, `_boot`, `run`, `models`.
-- Do not add back `visibilitychange`, `pagehide`, or `beforeunload` listeners. Lifecycle is handled by native-injected `window.focusout` / `window.focusin`.
-- Do not collapse `_pending` back to a single `_lastIntent` slot. The map is load-bearing - concurrent jobs must all resume.
-- Do not clear `_downloads` on `focusout`. The download is still in progress natively and callbacks must keep routing if the app returns quickly.
-- Do not try to re-fire downloads on `focusin` the way inference jobs are re-fired. NSURLSession / WorkManager own the transfer - re-firing would start a duplicate download.
-- Do not attempt to fabricate `onDownloadProgress` events on `focusin`. The native layer does not replay them and we have no source of truth for the current percentage until the next real progress tick.
+- JS → native is **only** `window.despia = url`. No `iframe`, no `location.href`, no `setTimeout` queue.
+- Wire native callbacks on `window.intelligence` **eagerly** at module load. Never lazily inside `run()` / `models.*` (the unsolicited catalogue push at app start is what breaks if you delay).
+- The UMD browser-global path **merges** the API into `window.intelligence`. It must not overwrite existing keys (the factory already attached `onML*`, `onDownload*`, etc.).
+- Runtime `ready` requires **`window.native_runtime === 'despia'`**. Do not gate on the presence of `window.despia` (it is a setter trap; reading it can return anything or nothing).
+- No `console.log` in normal paths. The only allowed log is `console.error('[despia-intelligence] Despia command failed:', e)` when the `window.despia` assignment throws.
+- No retry logic — the native layer handles retries.
+- No `init()`, `setup()`, or `configure()`.
+- Do not add `visibilitychange` / `pagehide` / `beforeunload` listeners. Lifecycle is handled natively. The SDK does not snapshot or auto-resume jobs.
+- Do not stub future types. They live in `TYPES` with `enabled: false`.
 
 ---
 
 ### Per-release WebView QA (native build)
 
-Run this on a **real Despia iOS and Android build** that includes Local Intelligence, before treating an SDK + native combo as shippable. Node tests in this repo do not replace this pass.
+Run on a real Despia iOS and Android build that includes Local Intelligence before treating an SDK + native combo as shippable. Node tests do not replace this.
 
-### Environment
+**Environment**
 
 - [ ] `window.native_runtime === 'despia'`
 - [ ] `intelligence.runtime.ok === true` and `status === 'ready'` after import
-- [ ] `window.intelligence` exists. After firing `intelligence://models?query=all`, native calls `onAvailableModelsLoaded(models)` with a non-empty array (when models are configured on the build); the SDK mirrors that payload onto `window.intelligence.availableModels`
+- [ ] After import, `typeof window.intelligence.onMLToken === 'function'` (and `onMLComplete`, `onMLError`, `onDownload*`, `onRemove*`, `onAvailableModelsLoaded`, `onInstalledModelsLoaded`) — eager wiring is present **before** any SDK call
 
-### Inference (`run`, `type: 'text'`)
+**Inference (`run`, `type: 'text'`)**
 
-- [ ] After first `intelligence.run(...)`, **`typeof window.intelligence.onMLToken === 'function'`** (and `onMLComplete`, `onMLError`) - SDK `_boot()` wired under `window.intelligence`
-- [ ] Single job: tokens stream; **`stream` handler receives full accumulated text** each time (replace, not append semantics in UI)
-- [ ] **`complete`** fires once with final string; **`onMLError`** path if you force an error - payload includes **`jobId`** when multiple jobs exist
-- [ ] **Two concurrent jobs** with different prompts: each handler only receives its job’s tokens/errors
+- [ ] Single job: tokens stream; `stream` handler receives the **full accumulated text** each time (replace, not append in UI)
+- [ ] `complete` fires once with final string; `error` payload is `{ code, message }`
+- [ ] Two concurrent jobs with different prompts: each handler only receives its own job’s events (routing by `jobId`)
 
-### Models
+**Models**
 
-- [ ] **`await intelligence.models.available()`** matches native catalog (ids, names, categories)
-- [ ] **`await intelligence.models.installed()`** resolves after `query=installed` (empty array valid); no hung promise after 35s wait
-- [ ] **Download**: `onStart` / `onProgress` (0-100) / `onEnd` or `onError`; background app mid-download then return. Progress or end still reaches the session callbacks or global `intelligence.on('download*')` listeners as designed
-- [ ] **Remove** / **removeAll**: promise resolves; `installedModels` updates
+- [ ] `await intelligence.models.available()` matches the native catalogue (ids, names, categories)
+- [ ] `await intelligence.models.installed()` resolves after `onInstalledModelsLoaded`; empty array is valid
+- [ ] Download: `onStart` / `onProgress` (0-100) / `onEnd` or `onError`
+- [ ] `remove` / `removeAll`: promise resolves; `installedModels` updates after a fresh `installed()`
 
-### Lifecycle
+**Release hygiene**
 
-- [ ] **Home button mid-generation**: on return, interrupted jobs **resume** without app code re-calling `run` for those intents
-- [ ] **`handler.interrupted`**: fires **once per active job** on `focusout` if you use it (optional smoke)
-
-### Release hygiene
-
-- [ ] Bump **`package.json`** version; tag Git with version and date in the message or GitHub Release notes; **`npm publish`** after `npm test`
+- [ ] Bump `package.json` version; tag Git with version and date in the message or GitHub Release notes; `npm publish` after `npm test`
 
 ---
 
 ### Shipping checklist - new type
 
 - [ ] Native team confirms route name and callback shape
-- [ ] Entry exists in `TYPES` with `"enabled": false`
-- [ ] `"enabled"` flipped to `true`
-- [ ] `"params"` array updated
-- [ ] `index.d.ts` - `type` union updated
-- [ ] `README.md` - usage example added
-- [ ] `package.json` - minor version bumped
-- [ ] Tested against Despia V4 build with native route active
-
+- [ ] Entry exists in `TYPES` with `enabled: false`
+- [ ] `enabled` flipped to `true`
+- [ ] `params` array updated
+- [ ] `index.d.ts` — `type` union updated
+- [ ] `README.md` — usage example added
+- [ ] `package.json` — minor version bumped
+- [ ] Tested against a Despia build with the native route active
 
 ---
 
 ## Raw WebView bridge reference
 
-**Internal reference.** This document describes the native WebView bridge as a direct contract: scheme URLs fired from JavaScript and callbacks invoked in the JS context. It is the conceptual source of truth that [`despia-intelligence`](https://www.npmjs.com/package/despia-intelligence) (the npm package) is built on.
-
-Every public behaviour of the npm package maps to something here. The package does not add capabilities the bridge does not expose; it adds routing, encoding, lifecycle glue, and safety. If you are forking the package, porting to another language, or collaborating on native changes, start here and confirm details with the iOS/Android teams.
-
----
+This section describes the native WebView bridge as a direct contract: scheme URLs fired from JavaScript, and callbacks invoked in the JS context. It is the conceptual source of truth that [`despia-intelligence`](https://www.npmjs.com/package/despia-intelligence) is built on.
 
 ### How the bridge works
 
-Despia runs your web app inside a native WebView shell. The bridge is bidirectional.
+Despia runs the web app inside a native WebView shell. The bridge is bidirectional.
 
-**JS → native:** assign the scheme URL string to **`window.despia`**. Despia routes it like an intercepted navigation **without** assigning **`window.location.href`**, which avoids SPA router clashes and keeps bridge traffic easy to log or breakpoint.
+**JS → native:** assign the scheme URL string to `window.despia`. Despia routes it as an intercepted navigation **without** assigning `window.location.href`, which avoids SPA router clashes and keeps bridge traffic easy to log or breakpoint.
 
-- **iOS:** `WebViewController.swift` → `decidePolicyFor navigationAction`
-- **Android:** `MainActivity.java` → `shouldOverrideUrlLoading`
+- iOS: `WebViewController.swift` → `decidePolicyFor navigationAction`
+- Android: `MainActivity.java` → `shouldOverrideUrlLoading`
 
-**Native → JS:** callbacks are invoked on **`window.intelligence`** directly. **Streaming inference** calls `window.intelligence.onMLToken`, `window.intelligence.onMLComplete`, and `window.intelligence.onMLError` after the SDK assigns them. **Model download / remove / progress** also calls `window.intelligence.onDownload*` / `onRemove*` functions directly (no registrar pattern). Lifecycle hooks **`window.focusout` / `window.focusin`** are assigned on `window` by native. No variable injection for tokens; no promise handoff from native for inference.
+**Native → JS:** callbacks are invoked on `window.intelligence` directly. Streaming inference calls `onMLToken` / `onMLComplete` / `onMLError`. Model lifecycle calls `onDownload*` / `onRemove*`. The catalogue is delivered via `onAvailableModelsLoaded` / `onInstalledModelsLoaded`.
 
-Examples below use **`window.despia = '…'`** directly (what the native Xcode / Android Studio WebView exposes). The [`despia-native`](https://www.npmjs.com/package/despia-native) npm package exposes **`despia(url)`** that queues and assigns **`window.despia`**. **`despia-intelligence`** does the same for **`run`** and **`models.*`** only: a short FIFO with **~1ms** between **`window.despia = url`** writes so concurrent calls do not stack in one tick. Prefer **`run`** / **`models`** so encoding and job IDs stay correct. Never **`location.href`** for these schemes.
+### Scheme 1 - Streaming inference (`intelligence://text`)
 
----
+iOS and Android. Used by `intelligence.run({ type: 'text', ... })`.
 
-### Runtime detection
-
-The WebView injects the runtime flag on boot (read once at page load):
-
-```js
-window.native_runtime // === 'despia' inside the Despia WebView
-```
-
-There is **no** `window.intelligence_available` variable. If `native_runtime === 'despia'`, the Local Intelligence bridge is available from the JS perspective.
-
-The npm package still treats a Despia-like user agent **without** `native_runtime === 'despia'` as **`outdated`**, and exposes `intelligence.runtime` with statuses `ready` | `outdated` | `unavailable`. Minimal raw gate:
-
-```js
-const ready = window.native_runtime === 'despia'
-```
-
----
-
-### Scheme 1 - One-shot inference (`appleintelligence://`)
-
-**iOS only (documented contract).** Fires via `appleintelligence://`. Runs the prompt to completion and invokes a named global function with the full response string. No streaming and no job ID.
-
-#### Fire the call
-
-```js
-window.despia =
-  'appleintelligence://?prompt=' + encodeURIComponent('What is the capital of France?')
-```
-
-#### Parameters
-
-| Key | Type | Required | Description |
-| --- | --- | --- | --- |
-| `prompt` | string | Yes | User prompt |
-| `instructions` | string | No | System-style instruction context |
-| `callback` | string | No | Name of a global function on `window` to receive the result. Defaults to `handleAIResponse` |
-
-#### Callback
-
-Native calls `window[callback](response)` on success. On failure, the same callback may receive an error message string (there is no separate error callback in this scheme).
-
-```js
-function handleAIResponse(response) {
-  document.getElementById('output').textContent = response
-}
-
-window.despia =
-  'appleintelligence://?prompt=' + encodeURIComponent('Explain TCP in one sentence.')
-```
-
-Custom callback and instructions:
-
-```js
-function myCallback(response) {
-  console.log(response)
-}
-
-window.despia =
-  'appleintelligence://?' +
-  'instructions=' + encodeURIComponent('Reply in one sentence.') +
-  '&prompt=' + encodeURIComponent('What is TCP?') +
-  '&callback=myCallback'
-```
-
-#### Flow
-
-```
-appleintelligence://?prompt=...&callback=handleAIResponse
-  → native intercepts scheme
-  → native runs one-shot completion
-  → window.handleAIResponse(response)   // success
-  → window.handleAIResponse(message)    // failure (string)
-```
-
----
-
-### Scheme 2 - Streaming inference (`intelligence://text`)
-
-**iOS and Android.** Text streaming uses the **`intelligence://`** host with a **`text`** path segment and a query string. The npm package always uses this route for `type: 'text'` (see `TYPES.text.route` in `index.js`).
-
-#### Inference callbacks - `window.intelligence` (internal native contract)
-
-Streaming inference uses **function assignment on `window.intelligence`** (the SDK assigns the functions; native calls them). This matches the current internal runtime contract.
-
-Assign **once** per page (or compose your own dispatcher). Use the job **`id`** to correlate concurrent streams. **`onMLError`** includes **`jobId`** so you can route errors to the correct handler.
+Raw fire (without the SDK):
 
 ```js
 const jobId = crypto.randomUUID()
 
 window.intelligence = window.intelligence || {}
+window.intelligence.onMLToken    = (id, chunk)   => { /* chunk is FULL accumulated text */ }
+window.intelligence.onMLComplete = (id, fullText) => { /* once */ }
+window.intelligence.onMLError    = (err)         => { /* { jobId, errorCode, errorMessage } */ }
 
-window.intelligence.onMLToken = function (id, chunk) {
-  if (id !== jobId) return
-  // chunk is the FULL accumulated response so far - replace UI, do not append
-  document.getElementById('output').textContent = chunk
-}
-
-window.intelligence.onMLComplete = function (id, fullText) {
-  if (id !== jobId) return
-  console.log('Complete:', fullText)
-}
-
-window.intelligence.onMLError = function (err) {
-  console.error(err.jobId, err.errorCode, err.errorMessage)
-}
-```
-
-#### Fire the call
-
-Use **`intelligence://text`** plus `encodeURIComponent` for every query value (the npm package does this for all keys so `+` is never used for spaces).
-
-```js
-window.despia =
-  'intelligence://text?' +
-  'id=' + encodeURIComponent(jobId) +
-  '&prompt=' + encodeURIComponent('What is the capital of France?')
-```
-
-With system prompt and model:
-
-```js
 window.despia =
   'intelligence://text?' +
   'id=' + encodeURIComponent(jobId) +
@@ -402,317 +204,109 @@ window.despia =
   '&stream=' + encodeURIComponent('true')
 ```
 
-#### Parameters (text route)
+**Parameters (text route)**
 
 | Key | Type | Required | Description |
-| --- | --- | --- | --- |
+|---|---|---|---|
 | `id` | string | Yes | Job id; echoed on every callback |
 | `prompt` | string | Yes | User prompt |
 | `system` | string | No | System / instruction context |
 | `model` | string | No | Model id, e.g. `qwen3-0.6b` |
-| `stream` | string/boolean | No | Passed through when set (`'true'` in examples) |
-| `webhook` | string | No | Reserved; parsed by native, not active in public docs |
+| `stream` | string/boolean | No | Pass `'true'` to stream |
 
-Additional keys supported by native may be forwarded as query params; the npm package forwards arbitrary keys on the params object except `type`.
+**Callbacks**
 
-#### Callbacks (inference - `window.intelligence`)
+- `onMLToken(id, chunk)` — `chunk` is the **full accumulated text so far**, not a delta. Replace UI; do not append.
+- `onMLComplete(id, fullText)` — once when inference finishes. `fullText` matches the final `chunk`.
+- `onMLError({ jobId, errorCode, errorMessage })` — `jobId` is present so callers can route errors when multiple jobs run.
 
-Native calls the **`window.intelligence.onMLToken` / `window.intelligence.onMLComplete` / `window.intelligence.onMLError`** functions you assigned.
-
-**`onMLToken(id, chunk)`** - **`chunk`** is the full accumulated text so far, not a delta. Replace the target element’s text; do not append.
-
-**`onMLComplete(id, fullText)`** - Called once when inference finishes. `fullText` matches the final `chunk` from `onMLToken`.
-
-**`onMLError({ jobId, errorCode, errorMessage })`** - `jobId` is present for routing when multiple jobs run.
-
-#### Error codes (streaming / text route)
+**Error codes (text route)**
 
 | Code | Description |
-| --- | --- |
-| `1` | `appleintelligence://` - missing `prompt` (per legacy one-shot docs) |
-| `2` | `intelligence://` text route - missing `id` |
-| `3` | Runtime inference error - see `errorMessage` |
+|---|---|
+| `2` | Missing `id` |
+| `3` | Runtime inference error — see `errorMessage` |
+| `7` | Model not installed (`invalid model id` / `unknown model id`) |
 
-#### Flow
-
-```
-intelligence://text?id=abc&prompt=...
-  → native intercepts scheme
-  → streaming session for job abc
-  → window.intelligence.onMLToken('abc', accumulatedText)   // repeats
-  → window.intelligence.onMLComplete('abc', fullText)       // once
-  → window.intelligence.onMLError({ jobId, errorCode, errorMessage }) // on failure
-```
-
-#### Multiple concurrent jobs
-
-Use a unique `id` per job and branch inside your `window.onML*` handlers (or maintain a map). The npm package keeps an internal job table so each `intelligence.run()` handler only receives its own events.
-
----
-
-### Scheme 3 - Model management
-
-Catalogue delivery differs by query: `query=all` is delivered exclusively via the **`onAvailableModelsLoaded(models)`** callback (no variable write); `query=installed` is delivered both by writing **`window.intelligence.installedModels`** directly and by calling **`onInstalledModelsLoaded(models)`**. Downloads and removes use **`intelligence://`** URLs **without** a text job `id`. Event delivery uses **direct native calls** into SDK-assigned `window.intelligence.onDownload*` / `onRemove*` functions.
+### Scheme 2 - Model management
 
 ```js
 window.intelligence = window.intelligence || {}
 ```
 
-#### Available models (scheme + callback delivery)
+**Available models** — fire `intelligence://models?query=all`. Native delivers via `window.intelligence.onAvailableModelsLoaded(models)` (no variable write). The SDK mirrors the payload onto `window.intelligence.availableModels` for any consumer that prefers reading the snapshot.
 
-Fire **`intelligence://models?query=all`**. Native delivers the catalogue by calling **`window.intelligence.onAvailableModelsLoaded(models)`**. Native does **not** write `window.intelligence.availableModels` for `query=all` — the callback is the delivery mechanism.
+**Installed models** — fire `intelligence://models?query=installed`. Native both writes `window.intelligence.installedModels` and calls `window.intelligence.onInstalledModelsLoaded(models)`. The SDK resolves the promise on the callback and mirrors the payload onto `installedModels`.
 
-The SDK assigns `onAvailableModelsLoaded` **eagerly at module load** (not inside `_boot()`, which is lazy on first `run()` / `models.*`). Native can push the catalogue unsolicited at app start, before any SDK call has had a chance to boot, and the callback must already exist to capture that push. Same lifecycle category as `window.focusout` / `window.focusin`. The handler mirrors its payload onto `window.intelligence.availableModels` so the variable observer used by `models.available()` resolves.
+**Download** — `intelligence://download?model=<id>`. Native calls `onDownloadStart(modelId)` → `onDownloadProgress(modelId, fraction0to1)` → `onDownloadEnd(modelId)` (or `onDownloadError(modelId, errString)`). The SDK normalises progress to 0-100 before invoking the per-call `onProgress` callback. Downloads continue natively via NSURLSession (iOS) and WorkManager (Android).
 
-```js
-// SDK fires intelligence://models?query=all and resolves once
-// onAvailableModelsLoaded(...) lands and is mirrored onto availableModels.
-const models = await intelligence.models.available()
-```
-
-#### Installed models (scheme refresh + variable update + callback)
-
-Fire **`intelligence://models?query=installed`**. Native delivers the installed list two ways simultaneously: it writes **`window.intelligence.installedModels = [...]`** directly **and** calls **`window.intelligence.onInstalledModelsLoaded(models)`**.
-
-The SDK observes the variable (which is sufficient on its own) and also assigns `onInstalledModelsLoaded` **eagerly at module load** for symmetry with the available-models path and to absorb any future build that drops the variable write. The callback handler mirrors its payload onto `window.intelligence.installedModels` so the variable observer resolves regardless of which path fires first.
-
-The npm package pre-clears the array, fires the scheme, and **polls** until `installedModels` becomes a “ready” non-empty snapshot or the value’s signature changes - then resolves (or resolves `[]` after a timeout so the promise never hangs).
-
-```js
-window.despia = 'intelligence://models?query=installed'
-// … later, WebView assigns e.g.:
-// window.intelligence.installedModels = [{ id: 'qwen3_0_6b', name: 'Qwen3 0.6b', category: 'text' }, ...]
-```
-
-You can still read **`window.intelligence.installedModels`** synchronously when you only need the last snapshot the WebView wrote.
-
-#### Download a model
-
-```js
-window.despia =
-  'intelligence://download?model=' + encodeURIComponent('qwen3_0_6b')
-```
-
-Downloads continue in the background via **NSURLSession** (iOS) and **WorkManager** (Android). Retry behaviour is owned by native code.
-
-**Registrars:**
-
-```js
-window.intelligence.onDownloadStart((modelId) => {})
-window.intelligence.onDownloadProgress((modelId, pct) => {
-  // Native sends pct as a 0-1 float; npm normalises to 0-100 for session callbacks.
-})
-window.intelligence.onDownloadEnd((modelId) => {})
-window.intelligence.onDownloadError((modelId, err) => {
-  // err is a string message
-})
-```
-
-#### Remove models
-
-```js
-window.despia =
-  'intelligence://remove?model=' + encodeURIComponent('qwen3_0_6b')
-
-window.despia = 'intelligence://remove?model=all'
-```
-
-**Registrars:**
-
-```js
-window.intelligence.onRemoveSuccess((modelId) => {})
-window.intelligence.onRemoveError((modelId, err) => {})
-window.intelligence.onRemoveAllSuccess(() => {})
-window.intelligence.onRemoveAllError((err) => {})
-```
-
----
-
-### Native app lifecycle (`window.focusout` / `window.focusin`)
-
-Injected on `window` by the Despia runtime from OS lifecycle hooks (not from `visibilitychange`, which is unreliable in WebViews when the JS thread is suspended).
-
-```js
-window.focusout = function () {
-  // iOS: applicationDidEnterBackground; Android: onPause
-  // Called synchronously while JS is still fully alive.
-}
-
-window.focusin = function () {
-  // iOS: applicationWillEnterForeground; Android: onResume
-}
-```
-
-The npm package registers its own `focusout` / `focusin` handlers to snapshot active inference jobs and download sessions, then **re-fires** interrupted text jobs on resume. Raw integrators must implement the same policy if they want identical behaviour.
-
----
-
-### Complete raw example (no npm package)
-
-Minimal HTML page showing the same primitives the SDK uses: runtime gate, callbacks on `window.intelligence`, `intelligence://text` URL, injected model arrays, and optional scheme refresh for installed models. Adjust CDN URLs and error handling for production.
-
-```html
-<!DOCTYPE html>
-<html>
-  <body>
-    <div id="output"></div>
-    <script src="https://cdn.jsdelivr.net/npm/despia-native/index.min.js"></script>
-    <script>
-      ;(function () {
-        if (window.native_runtime !== 'despia') {
-          document.getElementById('output').textContent = 'Not in Despia WebView'
-          return
-        }
-
-        window.intelligence = window.intelligence || {}
-
-        // Raw pattern: fire refresh, then poll installedModels until WebView updates it
-        // (npm models.installed() uses the same observe pattern internally).
-        window.intelligence.installedModels = []
-        window.despia = 'intelligence://models?query=installed'
-        ;(function waitInstalled() {
-          var list = window.intelligence.installedModels || []
-          if (list.length > 0) {
-            var installed = list.some(function (m) {
-              return m.id === 'qwen3_0_6b' || m.id === 'qwen3-0.6b'
-            })
-            if (installed) runInference()
-            else downloadModel()
-            return
-          }
-          setTimeout(waitInstalled, 100)
-        })()
-
-        function downloadModel() {
-          window.intelligence.onDownloadProgress = function (id, pct) {
-            var p = typeof pct === 'number' && pct <= 1 ? Math.round(pct * 100) : Math.round(pct)
-            document.getElementById('output').textContent = 'Downloading: ' + p + '%'
-          }
-          window.intelligence.onDownloadEnd = function () {
-            runInference()
-          }
-          window.despia = 'intelligence://download?model=qwen3_0_6b'
-        }
-
-        function runInference() {
-          var jobId = crypto.randomUUID()
-
-          window.intelligence.onMLToken = function (id, chunk) {
-            if (id === jobId) document.getElementById('output').textContent = chunk
-          }
-          window.intelligence.onMLComplete = function (id, fullText) {
-            if (id === jobId) console.log('done', fullText)
-          }
-          window.intelligence.onMLError = function (err) {
-            console.error(err && err.errorCode, err && err.errorMessage)
-          }
-
-          window.despia =
-            'intelligence://text' +
-            '?id=' +
-            encodeURIComponent(jobId) +
-            '&model=' +
-            encodeURIComponent('qwen3_0_6b') +
-            '&prompt=' +
-            encodeURIComponent('What is the meaning of life?') +
-            '&stream=' +
-            encodeURIComponent('true')
-        }
-
-        window.focusout = function () {
-          /* persist in-flight work if you bypass the npm package */
-        }
-        window.focusin = function () {
-          /* re-fire jobs if you bypass the npm package */
-        }
-      })()
-    </script>
-  </body>
-</html>
-```
-
----
+**Remove** — `intelligence://remove?model=<id>` and `intelligence://remove?model=all`. Native calls `onRemoveSuccess(modelId)` / `onRemoveError(modelId, err)` for single-model removals, and `onRemoveAllSuccess()` / `onRemoveAllError(err)` for the all variant.
 
 ### Scheme and callback tables
 
 #### JS → native (scheme URLs)
 
-From JavaScript, deliver any row below by assigning **`window.despia = url`** (full string, same encoding you would use for a navigation URL). That setter is the bridge surface shipped in the Despia native app project.
-
-The **`despia-intelligence`** npm package builds URLs in **`run`** / **`models`** and sends each through a small **FIFO queue**: **`window.despia = url`**, then **~1ms** before the next, so bursts never assign twice in the same tick.
-
 | URL | Action |
-| --- | --- |
-| `appleintelligence://?prompt=<text>` | One-shot inference (iOS only) |
-| `appleintelligence://?prompt=<text>&instructions=<text>&callback=<fn>` | One-shot with instructions + custom callback name |
-| `intelligence://text?id=<uuid>&...` | Streaming text inference (preferred; used by npm) |
-| `intelligence://models?query=all` | Refresh available models; native calls `window.intelligence.onAvailableModelsLoaded(models)` (no variable write) |
-| `intelligence://models?query=installed` | Refresh installed list; WebView writes `window.intelligence.installedModels` and also calls `onInstalledModelsLoaded(models)` |
+|---|---|
+| `intelligence://text?id=<uuid>&...` | Streaming text inference |
+| `intelligence://models?query=all` | Refresh available models; native calls `onAvailableModelsLoaded(models)` |
+| `intelligence://models?query=installed` | Refresh installed list; native writes `installedModels` and calls `onInstalledModelsLoaded(models)` |
 | `intelligence://download?model=<id>` | Download a model |
 | `intelligence://remove?model=<id>` | Remove one model |
 | `intelligence://remove?model=all` | Remove all models |
 
-Older examples may show `intelligence://?id=...` without the `text` segment; the npm package and current native integration use **`intelligence://text`**.
-
 #### Native → JS
 
 | Mechanism | Arguments / shape | When |
-| --- | --- | --- |
-| `window[callback](response)` | `response: string` | One-shot (`appleintelligence://`) success or error string |
-| `window.intelligence.onMLToken(id, chunk)` | `chunk` = full text so far | Streaming token snapshot (assign handler on `window.intelligence`) |
+|---|---|---|
+| `window.intelligence.onMLToken(id, chunk)` | `chunk` = full text so far | Streaming token snapshot |
 | `window.intelligence.onMLComplete(id, fullText)` | | Streaming complete |
 | `window.intelligence.onMLError({ jobId, errorCode, errorMessage })` | | Streaming / job error |
-| `window.intelligence.onAvailableModelsLoaded(models)` | `Model[]` | **Sole** delivery for `query=all`. Native does not write `availableModels` for this scheme. SDK mirrors payload onto `availableModels` so `_observe` resolves |
-| `window.intelligence.availableModels` | `Model[]` | Read-only mirror written by the SDK's `onAvailableModelsLoaded` handler. Safe to read for the last snapshot |
-| `window.intelligence.installedModels` | `Model[]` | Written by native after install/remove and `query=installed`; npm `installed()` uses `_observe` on this |
-| `window.intelligence.onInstalledModelsLoaded(models)` | `Model[]` | Also fired by native for `query=installed`; SDK mirrors payload onto `installedModels` for symmetry / forward-compat |
+| `window.intelligence.onAvailableModelsLoaded(models)` | `Model[]` | Sole delivery for `query=all` |
+| `window.intelligence.availableModels` | `Model[]` | Mirror written by the SDK after `onAvailableModelsLoaded` |
+| `window.intelligence.onInstalledModelsLoaded(models)` | `Model[]` | Fired for `query=installed` |
+| `window.intelligence.installedModels` | `Model[]` | Mirror written by native and by the SDK |
 | `window.intelligence.onDownloadStart(modelId)` | | Download started |
-| `window.intelligence.onDownloadProgress(modelId, pct)` | `pct` usually 0-1 float | Progress tick |
+| `window.intelligence.onDownloadProgress(modelId, fraction)` | `fraction` is 0-1 float | Progress tick |
 | `window.intelligence.onDownloadEnd(modelId)` | | Download finished |
 | `window.intelligence.onDownloadError(modelId, err)` | `err: string` | Download failed |
 | `window.intelligence.onRemoveSuccess(modelId)` | | Remove succeeded |
 | `window.intelligence.onRemoveError(modelId, err)` | | Remove failed |
 | `window.intelligence.onRemoveAllSuccess()` | | Remove all succeeded |
 | `window.intelligence.onRemoveAllError(err)` | | Remove all failed |
-| `window.focusout()` | - | App backgrounding (direct `window` hook) |
-| `window.focusin()` | - | App foregrounding (direct `window` hook) |
 
 ---
 
 ### How `despia-intelligence` maps to this
 
 | npm API | Raw bridge equivalent |
-| --- | --- |
-| `intelligence.run({ type: 'text', ... }, handler)` | Builds URL, enqueues **`window.despia = url`** (same **~1ms** FIFO as **`models.*`**), plus **`window.intelligence.onMLToken` / `onMLComplete` / `onMLError`** assignments; SDK routes by job id |
-| `intelligence.models.available()` | Pre-clears `availableModels`, `_observe` polls it, `_fire` `query=all`; native calls `onAvailableModelsLoaded(models)` and the SDK's eager handler mirrors the payload onto `availableModels` so the observer resolves; `[]` on timeout |
-| `intelligence.models.installed()` | Pre-clears `installedModels`, `_observe` polls until it changes, `_fire` `query=installed` (native writes the variable directly and also fires `onInstalledModelsLoaded` which the SDK mirrors); resolves `[]` on timeout |
-| `intelligence.models.download(id, callbacks)` | `intelligence://download?model=<id>` + download callbacks / global events |
-| `intelligence.models.remove(id)` | `intelligence://remove?model=<id>` + remove callbacks |
-| `intelligence.models.removeAll()` | `intelligence://remove?model=all` + remove-all callbacks |
-| `intelligence.on('downloadEnd', fn)` etc. | Same native events as `onDownloadEnd`; the package fans out through an internal listener list |
-| Auto-resume after background | Package-owned `window.focusout` / `window.focusin` that re-call `run()` for interrupted jobs (each URL goes through the same **`window.despia`** queue) and restore download callback maps |
+|---|---|
+| `intelligence.run({ type: 'text', ... }, handler)` | Builds URL, fires `window.despia = url`, routes `onMLToken` / `onMLComplete` / `onMLError` by `jobId` to `handler` |
+| `intelligence.models.available()` | Fires `intelligence://models?query=all`, resolves on `onAvailableModelsLoaded` |
+| `intelligence.models.installed()` | Fires `intelligence://models?query=installed`, resolves on `onInstalledModelsLoaded` |
+| `intelligence.models.download(id, callbacks)` | Fires `intelligence://download?model=<id>`, fans `onDownload*` to `callbacks` and to `intelligence.on('download*')` |
+| `intelligence.models.remove(id)` | Fires `intelligence://remove?model=<id>`, resolves on `onRemoveSuccess` / rejects on `onRemoveError` |
+| `intelligence.models.removeAll()` | Fires `intelligence://remove?model=all`, resolves on `onRemoveAllSuccess` / rejects on `onRemoveAllError` |
 
-The package adds: stable **`encodeURIComponent`** query building (no `+` for spaces), UUID generation, per-job handler tables, **`try`/`catch` around user handlers**, `focusout`/`focusin` orchestration, normalised download progress (0-100), a thin **FIFO + ~1ms** spacer before each **`window.despia = url`** inside **`_fire`**, and **`_boot()`** wiring for **`window.intelligence.onML*`** and **`window.intelligence.onDownload*` / `onRemove*`**. Both match native.
-
----
+The package adds: stable `encodeURIComponent` query building (no `+` for spaces), UUID generation, per-job handler tables, `try`/`catch` around user handlers, and normalised download progress (0-100). Nothing else.
 
 ### Confirm with native before relying on edge behaviour
 
-The bridge contract evolves with the runtime. The following are used in this repository’s JS and tests but should be **verified on real builds** when changing native code:
+The bridge contract evolves with the runtime. Verify on real builds when changing native code:
 
 - Exact shape and timing of `onMLError` and whether `jobId` is always present
-- Replay of download completion callbacks when a download finishes while the app is backgrounded
+- Replay of download completion callbacks when the app was backgrounded mid-download
 - Any future routes (`intelligence://vision`, `microphone`, etc.) behind feature flags
 
-When native behaviour is confirmed, keep this document in sync with native when the contract changes.
+Keep this document in sync with native when the contract changes.
 
 ---
 
 ## Future ideas (not shipped)
 
-Internal parking lot for features that are spec'd but not yet shipped by the native runtime. Not published on npm; not referenced from the public README. Move a section into **`README.md`** only after the native team confirms the route is live.
+Internal parking lot for features that are spec'd but not yet shipped by the native runtime. Not published on npm; not referenced from the public README. Move a section into `README.md` only after the native team confirms the route is live.
 
-The package already passes **`file`** and **`filepicker`** through unchanged. These ideas are about **publishing** usage examples, not about any code changes in **`index.js`**.
+The package already passes `file` and `filepicker` through unchanged. These ideas are about **publishing** usage examples, not about any code changes in `index.js`.
 
 ### Multi-modal - attach files
 
@@ -727,21 +321,6 @@ intelligence.run({
 }, {
   stream:   (chunk)  => el.textContent = chunk,
   complete: (result) => save(result),
-})
-```
-
-#### Multiple mixed sources
-
-Gated on: native URL-fetch and `cdn:<index>` resolver.
-
-```js
-intelligence.run({
-  type:   'text',
-  model:  'lfm2.5-vl-1.6b',
-  prompt: 'Compare these images.',
-  file:   ['/var/mobile/.../a.jpg', 'https://cdn.example.com/b.jpg', 'cdn:my_index'],
-}, {
-  stream: (chunk) => el.textContent = chunk,
 })
 ```
 
@@ -764,60 +343,34 @@ intelligence.run({
 
 Gated on: `audio` type enabled in `TYPES` + a TTS model shipped by native.
 
-The pattern works today for any combination of enabled types - fire one call from inside another's `stream` handler, nothing is blocking. Keep this example out of the public README until `audio` ships.
-
 ```js
 let prev = ''
-
 intelligence.run({
-  type:   'text',
-  model:  'lfm2.5-1.2b-instruct',
-  prompt: 'Tell me three facts about TCP.',
-  stream: true,
+  type: 'text', model: 'lfm2.5-1.2b-instruct', prompt: 'Tell me three facts about TCP.', stream: true,
 }, {
   stream: (chunk) => {
     el.textContent = chunk
     const sentence = extractNewSentence(prev, chunk)
-    if (sentence) intelligence.run({
-      type:     'audio',
-      model:    'tts-model',
-      prompt:   sentence,
-      response: ['speak'],
-    })
+    if (sentence) intelligence.run({ type: 'audio', model: 'tts-model', prompt: sentence, response: ['speak'] })
     prev = chunk
   },
-  complete: (result) => save(result),
 })
 ```
 
 ### Future model catalogue
 
-Models to advertise in the README once the corresponding `type` flips to `"enabled": true` in `TYPES`.
+Models to advertise in the README once the corresponding `type` flips to `enabled: true` in `TYPES`.
 
-- **Vision** (`type: 'vision'` or multi-modal `text`) - `lfm2.5-vl-1.6b`, `lfm2-vl-450m`, `qwen3.5-2b`, `qwen3.5-0.8b`, `gemma-4-e2b-it`, `gemma-3n-e2b-it`
-- **Transcription** (`type: 'transcription'`) - `parakeet-tdt-0.6b-v3`, `parakeet-ctc-1.1b`, `parakeet-ctc-0.6b`, `whisper-medium`, `whisper-small`, `whisper-base`, `whisper-tiny`, `moonshine-base`
-- **Embedding / VAD / Speaker** (`type: 'embed'` and friends) - `qwen3-embedding-0.6b`, `nomic-embed-text-v2-moe`, `silero-vad`, `segmentation-3.0`, `wespeaker-voxceleb-resnet34-lm`
+- **Vision** — `lfm2.5-vl-1.6b`, `lfm2-vl-450m`, `qwen3.5-2b`, `qwen3.5-0.8b`, `gemma-4-e2b-it`, `gemma-3n-e2b-it`
+- **Transcription** — `parakeet-tdt-0.6b-v3`, `parakeet-ctc-1.1b`, `parakeet-ctc-0.6b`, `whisper-medium`, `whisper-small`, `whisper-base`, `whisper-tiny`, `moonshine-base`
+- **Embedding / VAD / Speaker** — `qwen3-embedding-0.6b`, `nomic-embed-text-v2-moe`, `silero-vad`, `segmentation-3.0`, `wespeaker-voxceleb-resnet34-lm`
 
 All models ship as `int4` (smaller, faster) or `int8` (higher quality).
-
-#### Transcription model grid (draft for README when `transcription` ships)
-
-| Model                   | Strengths                      | Good use cases                                              |
-| ----------------------- | ------------------------------ | ----------------------------------------------------------- |
-| `whisper-tiny`          | Fast, real-time                | Live captions, voice commands, push-to-talk                 |
-| `moonshine-base`        | Fast, real-time                | Live captions, streaming dictation                          |
-| `whisper-base`          | Balanced                       | General dictation, short voice notes                        |
-| `whisper-small`         | Higher quality                 | Meetings, longer recordings                                 |
-| `whisper-medium`        | High quality                   | Transcribing accented or noisy audio                        |
-| `parakeet-ctc-0.6b`     | Streaming-friendly             | Live transcription with partial results                     |
-| `parakeet-ctc-1.1b`     | Higher accuracy streaming      | Live transcription where accuracy matters                   |
-| `parakeet-tdt-0.6b-v3`  | Highest accuracy               | Offline transcription, archival, closed captioning          |
 
 ### Shipping checklist - publishing an idea
 
 - [ ] Native team confirms route/param is live on iOS and Android
 - [ ] Spec the result shape (what `complete(result)` receives when files are involved)
-- [ ] Move the promoted section from here into **`README.md`**
-- [ ] Bump minor version in **`package.json`**
+- [ ] Move the promoted section from here into `README.md`
+- [ ] Bump minor version in `package.json`
 - [ ] If a new `type` is involved, follow [Shipping checklist - new type](#shipping-checklist---new-type) under Package maintenance above
-
