@@ -12,8 +12,7 @@
   // --- Bridge: prefer window.despia (native setter). FIFO ~1ms between assignments so bursts
   // never set the property twice in the same synchronous turn.
   //
-  // Internal runtimes may also support scheme navigation interception; we keep a fallback
-  // that matches the raw HTML test page pattern (hidden iframe).
+  // Internal contract: JS -> native is via window.despia assignment (native setter).
 
   var _despiaQueue      = [];
   var _despiaProcessing = false;
@@ -24,25 +23,7 @@
     var item = _despiaQueue.shift();
     var url = item && item.url;
     try {
-      if (typeof window !== 'undefined' && url != null) {
-        // Primary: native setter interception.
-        if ('despia' in window) {
-          window.despia = url;
-        } else {
-          // Fallback: navigation interception (matches internal raw HTML page).
-          var iframe = document && document.createElement ? document.createElement('iframe') : null;
-          if (iframe && document && document.body && document.body.appendChild) {
-            iframe.style.display = 'none';
-            iframe.src = url;
-            document.body.appendChild(iframe);
-            if (typeof setTimeout !== 'undefined') {
-              setTimeout(function () {
-                try { if (iframe && iframe.remove) iframe.remove(); } catch (e) {}
-              }, 200);
-            }
-          }
-        }
-      }
+      if (typeof window !== 'undefined' && url != null) window.despia = url;
     } catch (e) {
       if (typeof console !== 'undefined' && console.error) {
         console.error('[despia-intelligence] Despia command failed:', e);
@@ -177,7 +158,8 @@
     check();
   }
 
-  // --- Runtime (fixed at import): ready only when native_runtime === 'despia'.
+  // --- Runtime (fixed at import): internal builds may not inject native_runtime;
+  // treat presence of the native setter (window.despia) as ready.
 
   var _rt = (function () {
     if (typeof window === 'undefined') return { ok: false, status: 'unavailable', message: null };
@@ -185,9 +167,11 @@
     var hasRuntime = window.native_runtime === 'despia';
     var hasUA      = (navigator.userAgent.toLowerCase().indexOf('despia') !== -1) || window.__DESPIA_UA_OVERRIDE === true;
 
-    if (hasRuntime) return { ok: true,  status: 'ready',         message: null };
-    if (hasUA)      return { ok: false, status: 'outdated',      message: 'Your Despia app is outdated. Install the latest version to use Local Intelligence.' };
-                    return { ok: false, status: 'unavailable',   message: null };
+    var hasSetter  = ('despia' in window);
+
+    if (hasRuntime || hasSetter) return { ok: true,  status: 'ready',       message: null };
+    if (hasUA)                  return { ok: false, status: 'outdated',    message: 'Your Despia app is outdated. Install the latest version to use Local Intelligence.' };
+                                return { ok: false, status: 'unavailable', message: null };
   }());
 
   function _nr() {
