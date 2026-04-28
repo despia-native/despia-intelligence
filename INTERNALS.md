@@ -460,7 +460,12 @@ window.intelligence = window.intelligence || {}
 
 #### Available models (scheme + injected variable)
 
-The native layer injects `window.intelligence.availableModels` and may also fire `window.intelligence.onAvailableModelsLoaded(models)`.
+The native layer delivers the catalogue in either of two equivalent ways:
+
+1. Direct write to `window.intelligence.availableModels` (legacy).
+2. Function call into `window.intelligence.onAvailableModelsLoaded(models)` (current builds).
+
+`_boot()` wires `onAvailableModelsLoaded` to mirror its payload onto `window.intelligence.availableModels`, so the variable observer used by `models.available()` resolves the same way regardless of which delivery path the native build picks.
 
 The SDK’s `models.available()` triggers a refresh:
 
@@ -471,7 +476,14 @@ const models = await intelligence.models.available()
 
 #### Installed models (scheme refresh + variable update)
 
-Fire **`intelligence://models?query=installed`**. The WebView then **writes `window.intelligence.installedModels` directly** (same idea as `despia-native` watching `window[variableName]` after a scheme). The npm package does **not** depend on `onInstalledModelsLoaded`; it pre-clears the array, fires the scheme, and **polls** until `installedModels` becomes a “ready” non-empty snapshot or the value’s signature changes - then resolves (or resolves `[]` after a timeout so the promise never hangs).
+Fire **`intelligence://models?query=installed`**. The WebView delivers the result in either of two equivalent ways:
+
+1. Direct write to `window.intelligence.installedModels` (legacy `despia-native`-style variable watch).
+2. Function call into `window.intelligence.onInstalledModelsLoaded(models)` (current builds).
+
+`_boot()` wires `onInstalledModelsLoaded` to mirror its payload onto `window.intelligence.installedModels`, so the SDK’s variable observer resolves the same way regardless of which path the native build uses.
+
+The npm package pre-clears the array, fires the scheme, and **polls** until `installedModels` becomes a “ready” non-empty snapshot or the value’s signature changes - then resolves (or resolves `[]` after a timeout so the promise never hangs).
 
 ```js
 window.despia = 'intelligence://models?query=installed'
@@ -659,7 +671,9 @@ Older examples may show `intelligence://?id=...` without the `text` segment; the
 | `window.intelligence.onMLComplete(id, fullText)` | | Streaming complete |
 | `window.intelligence.onMLError({ jobId, errorCode, errorMessage })` | | Streaming / job error |
 | `window.intelligence.availableModels` | `Model[]` | Injected / updated by WebView |
+| `window.intelligence.onAvailableModelsLoaded(models)` | `Model[]` | Optional callback path used by current native builds; SDK mirrors payload onto `availableModels` so `_observe` resolves it |
 | `window.intelligence.installedModels` | `Model[]` | Injected / updated after install/remove and `query=installed`; npm `installed()` uses `_observe` on this |
+| `window.intelligence.onInstalledModelsLoaded(models)` | `Model[]` | Optional callback path used by current native builds; SDK mirrors payload onto `installedModels` so `_observe` resolves it |
 | `window.intelligence.onDownloadStart(modelId)` | | Download started |
 | `window.intelligence.onDownloadProgress(modelId, pct)` | `pct` usually 0-1 float | Progress tick |
 | `window.intelligence.onDownloadEnd(modelId)` | | Download finished |

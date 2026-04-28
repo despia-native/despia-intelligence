@@ -347,6 +347,19 @@
     window.intelligence.onRemoveAllError = function (err) {
       if (_removeAll) { _removeAll.reject(new Error(err)); _removeAll = null; }
     };
+
+    // Catalogue delivery: native may set window.intelligence.availableModels /
+    // installedModels directly OR call these loaded-callbacks. Mirror the
+    // payload onto the variable so _observe picks it up either way.
+    window.intelligence.onAvailableModelsLoaded = function (models) {
+      if (!window.intelligence) window.intelligence = {};
+      window.intelligence.availableModels = Array.isArray(models) ? models : [];
+    };
+
+    window.intelligence.onInstalledModelsLoaded = function (models) {
+      if (!window.intelligence) window.intelligence = {};
+      window.intelligence.installedModels = Array.isArray(models) ? models : [];
+    };
   }
 
   function run(params, handler) {

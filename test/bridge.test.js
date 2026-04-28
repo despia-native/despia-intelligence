@@ -51,6 +51,20 @@ function loadInDespiaBridgeContext(options) {
           window.intelligence.installedModels = [{ id: 'm1', name: 'M1', category: 'text' }];
         }, 50);
       }
+      if (options && options.simulateAvailableLoadedCallback && String(u).indexOf('query=all') !== -1) {
+        setTimeout(function () {
+          if (typeof window.intelligence.onAvailableModelsLoaded === 'function') {
+            window.intelligence.onAvailableModelsLoaded([{ id: 'cb-a', name: 'CB-A', category: 'text' }]);
+          }
+        }, 50);
+      }
+      if (options && options.simulateInstalledLoadedCallback && String(u).indexOf('query=installed') !== -1) {
+        setTimeout(function () {
+          if (typeof window.intelligence.onInstalledModelsLoaded === 'function') {
+            window.intelligence.onInstalledModelsLoaded([{ id: 'cb-m1', name: 'CB-M1', category: 'text' }]);
+          }
+        }, 50);
+      }
     },
   });
 
@@ -187,5 +201,36 @@ test('models.installed fires scheme and resolves after installedModels changes',
   assert.match(hrefLog[0], /intelligence:\/\/models\?query=installed/);
   assert.equal(list.length, 1);
   assert.equal(list[0].id, 'm1');
+  assert.deepEqual(window.intelligence.installedModels, list);
+});
+
+test('_boot wires onAvailableModelsLoaded and onInstalledModelsLoaded callbacks', () => {
+  const { intelligence, window } = loadInDespiaBridgeContext();
+  intelligence.run({ type: 'text', model: 'm', prompt: 'boot' }, {});
+  assert.equal(typeof window.intelligence.onAvailableModelsLoaded, 'function');
+  assert.equal(typeof window.intelligence.onInstalledModelsLoaded, 'function');
+});
+
+test('models.available resolves when native delivers via onAvailableModelsLoaded', async () => {
+  const { intelligence, hrefLog, window } = loadInDespiaBridgeContext({
+    simulateAvailableLoadedCallback: true,
+  });
+  const list = await intelligence.models.available();
+  assert.equal(hrefLog.length, 1);
+  assert.match(hrefLog[0], /intelligence:\/\/models\?query=all/);
+  assert.equal(list.length, 1);
+  assert.equal(list[0].id, 'cb-a');
+  assert.deepEqual(window.intelligence.availableModels, list);
+});
+
+test('models.installed resolves when native delivers via onInstalledModelsLoaded', async () => {
+  const { intelligence, hrefLog, window } = loadInDespiaBridgeContext({
+    simulateInstalledLoadedCallback: true,
+  });
+  const list = await intelligence.models.installed();
+  assert.equal(hrefLog.length, 1);
+  assert.match(hrefLog[0], /intelligence:\/\/models\?query=installed/);
+  assert.equal(list.length, 1);
+  assert.equal(list[0].id, 'cb-m1');
   assert.deepEqual(window.intelligence.installedModels, list);
 });

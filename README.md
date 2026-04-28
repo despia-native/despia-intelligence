@@ -460,6 +460,18 @@ All text models are published in `int4` (smaller, faster) and `int8` (higher qua
 
 Discover what is actually installable on the current runtime via `intelligence.models.available()`. New models ship over the air from [Hugging Face](https://huggingface.co) and do not require an SDK upgrade.
 
+> **Always pass the exact `id` from `intelligence.models.available()` to `models.download()` and `run()`.** Native catalog ids may differ from the human-readable forms in this README (for example a build may ship `qwen3_0_6b` instead of `qwen3-0.6b`). Passing a label that is not in the catalog produces an `unsupported model id` error from the native layer.
+
+```js
+const all  = await intelligence.models.available();
+const pick = all.find(m => /qwen3/i.test(m.id) && /0[._-]6/.test(m.id));
+if (pick) {
+  intelligence.models.download(pick.id, {
+    onEnd: () => intelligence.run({ type: 'text', model: pick.id, prompt: 'Hi' }, handler),
+  });
+}
+```
+
 ---
 
 ## Support
