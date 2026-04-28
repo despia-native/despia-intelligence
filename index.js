@@ -158,8 +158,7 @@
     check();
   }
 
-  // --- Runtime (fixed at import): internal builds may not inject native_runtime;
-  // treat presence of the native setter (window.despia) as ready.
+  // --- Runtime (fixed at import): ready only when native_runtime === 'despia'.
 
   var _rt = (function () {
     if (typeof window === 'undefined') return { ok: false, status: 'unavailable', message: null };
@@ -167,9 +166,7 @@
     var hasRuntime = window.native_runtime === 'despia';
     var hasUA      = (navigator.userAgent.toLowerCase().indexOf('despia') !== -1) || window.__DESPIA_UA_OVERRIDE === true;
 
-    var hasSetter  = ('despia' in window);
-
-    if (hasRuntime || hasSetter) return { ok: true,  status: 'ready',       message: null };
+    if (hasRuntime) return { ok: true,  status: 'ready',       message: null };
     if (hasUA)                  return { ok: false, status: 'outdated',    message: 'Your Despia app is outdated. Install the latest version to use Local Intelligence.' };
                                 return { ok: false, status: 'unavailable', message: null };
   }());
@@ -378,9 +375,18 @@
     available: function () {
       if (!_rt.ok) return Promise.resolve([]);
       _boot();
-      return Promise.resolve(
-        (window.intelligence && window.intelligence.availableModels) || []
-      );
+      var existing = (window.intelligence && window.intelligence.availableModels) || [];
+      if (Array.isArray(existing) && existing.length > 0) return Promise.resolve(existing);
+
+      // Internal contract (matches the working HTML demo): fire query=all and wait
+      // for native to inject window.intelligence.availableModels.
+      return new Promise(function (resolve) {
+        if (window.intelligence) window.intelligence.availableModels = [];
+        _observe('availableModels', function (val) {
+          resolve(val || []);
+        }, 10000);
+        _fire('intelligence://models?query=all');
+      });
     },
 
     installed: function () {

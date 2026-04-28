@@ -458,14 +458,16 @@ The WebView injects **`window.intelligence.availableModels`** and **`window.inte
 window.intelligence = window.intelligence || {}
 ```
 
-#### Available models (no scheme)
+#### Available models (scheme + injected variable)
+
+The native layer injects `window.intelligence.availableModels` and may also fire `window.intelligence.onAvailableModelsLoaded(models)`.
+
+The SDK’s `models.available()` triggers a refresh:
 
 ```js
-// Injected on boot - no round-trip
-const models = window.intelligence.availableModels || []
+// SDK will fire intelligence://models?query=all and resolve once availableModels updates
+const models = await intelligence.models.available()
 ```
-
-The npm package’s `models.available()` resolves to this array (or `[]` when not in the Despia WebView).
 
 #### Installed models (scheme refresh + variable update)
 
@@ -640,7 +642,7 @@ The **`despia-intelligence`** npm package builds URLs in **`run`** / **`models`*
 | `appleintelligence://?prompt=<text>&instructions=<text>&callback=<fn>` | One-shot with instructions + custom callback name |
 | `intelligence://text?id=<uuid>&...` | Streaming text inference (preferred; used by npm) |
 | _(injected)_ `window.intelligence.availableModels` | Supported models snapshot (no scheme required for read) |
-| `intelligence://models?query=all` | Optional native scheme (may still exist for tooling) |
+| `intelligence://models?query=all` | Refresh available models; native updates `window.intelligence.availableModels` |
 | `intelligence://models?query=installed` | Refresh installed list; WebView updates `window.intelligence.installedModels` |
 | `intelligence://download?model=<id>` | Download a model |
 | `intelligence://remove?model=<id>` | Remove one model |

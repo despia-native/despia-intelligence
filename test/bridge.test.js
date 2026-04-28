@@ -41,6 +41,11 @@ function loadInDespiaBridgeContext(options) {
     set(u) {
       hrefLog.push(u);
       window._despiaUrl = u;
+      if (options && options.simulateAvailableResponse && String(u).indexOf('query=all') !== -1) {
+        setTimeout(function () {
+          window.intelligence.availableModels = [{ id: 'a', name: 'A', category: 'text' }];
+        }, 50);
+      }
       if (options && options.simulateInstalledResponse && String(u).indexOf('query=installed') !== -1) {
         setTimeout(function () {
           window.intelligence.installedModels = [{ id: 'm1', name: 'M1', category: 'text' }];
@@ -153,14 +158,16 @@ test('Despia WebView context: download event on/off via native callback', () => 
   assert.equal(n, 1);
 });
 
-test('models.available reads injected list and does not fire models scheme', async () => {
-  const modelsList = [{ id: 'a', name: 'A', category: 'text' }];
-  const { intelligence, hrefLog } = loadInDespiaBridgeContext({
-    availableModels: modelsList,
+test('models.available fires scheme and resolves after availableModels changes', async () => {
+  const { intelligence, hrefLog, window } = loadInDespiaBridgeContext({
+    simulateAvailableResponse: true,
   });
   const list = await intelligence.models.available();
-  assert.deepEqual(list, modelsList);
-  assert.equal(hrefLog.length, 0);
+  assert.equal(hrefLog.length, 1);
+  assert.match(hrefLog[0], /intelligence:\/\/models\?query=all/);
+  assert.equal(list.length, 1);
+  assert.equal(list[0].id, 'a');
+  assert.deepEqual(window.intelligence.availableModels, list);
 });
 
 test('models.available returns empty array when runtime not ready', async () => {
