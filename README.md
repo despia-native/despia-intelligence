@@ -155,7 +155,7 @@ if (!intelligence.runtime.ok) {
 }
 ```
 
-Readiness is determined only by `window.native_runtime === 'despia'` (injected at launch). Model catalogues live on `window.intelligence.availableModels` / `installedModels` (WebView-injected). No feature-detection round-trip for the runtime flag.
+Readiness is determined only by `window.native_runtime === 'despia'` (injected at launch). Model catalogues are delivered by the native runtime via the `onAvailableModelsLoaded` / `onInstalledModelsLoaded` callbacks the SDK assigns on `window.intelligence`; the SDK mirrors them onto `window.intelligence.availableModels` / `installedModels` for synchronous reads. No feature-detection round-trip for the runtime flag.
 
 ---
 
@@ -169,7 +169,7 @@ If you are an AI coding agent generating code against this SDK, follow these rul
 - Do not implement your own `visibilitychange`, `pagehide`, or `beforeunload` persistence for inference. The SDK already auto-resumes every active job via `window.focusout` and `window.focusin` called by the native layer. Any number of concurrent jobs resume.
 - Do not use `handler.interrupted(intent)` to implement resume. Resume is automatic. `interrupted` fires once per active job on `focusout` (per handler, not once globally). Use for UI affordances or analytics only.
 - `stream(chunk)` receives the full accumulated text so far, not a delta. Replace the DOM content, do not append.
-- Use `intelligence.models.available()` to read installable models at runtime (backed by `window.intelligence.availableModels`). Do not hardcode model lists; new models ship over the air without an SDK upgrade.
+- Use `intelligence.models.available()` to read installable models at runtime. Do not hardcode model lists; new models ship over the air without an SDK upgrade.
 - For a model that is not yet installed, call `intelligence.models.download(id, callbacks)` first. The `onProgress` callback delivers percentage updates. Downloads survive backgrounding.
 - Only `type: 'text'` is enabled in the current release. Any other value throws a clear error at runtime. Do not add fallbacks that silently ignore the error; surface it to the developer.
 - Any key in the params object is forwarded to the native layer as-is. Arrays become comma-separated after URL encoding. You do not need to encode values yourself.
@@ -204,8 +204,8 @@ call.cancel(); // remove this job from the SDK. No further callbacks for this jo
 
 | Method                              | Returns                  | Description                                                           |
 | ----------------------------------- | ------------------------ | --------------------------------------------------------------------- |
-| `available()`                       | `Promise<Model[]>`       | Reads `window.intelligence.availableModels` (WebView-injected). Resolves immediately; returns **`[]`** when **`runtime.ok`** is false. |
-| `installed()`                       | `Promise` (see `index.d.ts`) | When ready: fires `query=installed`, then resolves when **`installedModels`** updates (internal variable observer; times out to **`[]`**). When not ready: resolves to the same **not-ready** shape as `run`. |
+| `available()`                       | `Promise<Model[]>`       | When ready: fires `query=all`; native delivers via `onAvailableModelsLoaded(models)`; SDK resolves with that list. Returns **`[]`** when **`runtime.ok`** is false. |
+| `installed()`                       | `Promise` (see `index.d.ts`) | When ready: fires `query=installed`, then resolves when **`installedModels`** updates (the SDK observes both the direct variable write and the `onInstalledModelsLoaded` callback; times out to **`[]`**). When not ready: resolves to the same **not-ready** shape as `run`. |
 | `download(id, { onStart, onProgress, onEnd, onError })` | `void` or not-ready      | Starts a background download when ready; fire-and-forget with callbacks. When not ready: returns the **not-ready** object (same family as `run`). |
 | `remove(id)`                        | `Promise` (see `index.d.ts`) | Remove one model when ready; when not ready, resolves to the **not-ready** shape. |
 | `removeAll()`                       | `Promise` (see `index.d.ts`) | Remove every downloaded model when ready; when not ready, resolves to the **not-ready** shape. |

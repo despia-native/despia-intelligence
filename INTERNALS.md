@@ -208,7 +208,7 @@ Run this on a **real Despia iOS and Android build** that includes Local Intellig
 
 - [ ] `window.native_runtime === 'despia'`
 - [ ] `intelligence.runtime.ok === true` and `status === 'ready'` after import
-- [ ] `window.intelligence` exists; `availableModels` is a non-empty array after boot (when models are configured on the build)
+- [ ] `window.intelligence` exists. After firing `intelligence://models?query=all`, native calls `onAvailableModelsLoaded(models)` with a non-empty array (when models are configured on the build); the SDK mirrors that payload onto `window.intelligence.availableModels`
 
 ### Inference (`run`, `type: 'text'`)
 
@@ -452,36 +452,29 @@ Use a unique `id` per job and branch inside your `window.onML*` handlers (or mai
 
 ### Scheme 3 - Model management
 
-The WebView injects **`window.intelligence.availableModels`** and **`window.intelligence.installedModels`** as arrays (read synchronously; native updates them after install/remove). Downloads and removes still use **`intelligence://`** URLs **without** a text job `id`. Event delivery uses **direct native calls** into SDK-assigned `window.intelligence.onDownload*` / `onRemove*` functions.
+Catalogue delivery differs by query: `query=all` is delivered exclusively via the **`onAvailableModelsLoaded(models)`** callback (no variable write); `query=installed` is delivered both by writing **`window.intelligence.installedModels`** directly and by calling **`onInstalledModelsLoaded(models)`**. Downloads and removes use **`intelligence://`** URLs **without** a text job `id`. Event delivery uses **direct native calls** into SDK-assigned `window.intelligence.onDownload*` / `onRemove*` functions.
 
 ```js
 window.intelligence = window.intelligence || {}
 ```
 
-#### Available models (scheme + injected variable)
+#### Available models (scheme + callback delivery)
 
-The native layer delivers the catalogue in either of two equivalent ways:
+Fire **`intelligence://models?query=all`**. Native delivers the catalogue by calling **`window.intelligence.onAvailableModelsLoaded(models)`**. Native does **not** write `window.intelligence.availableModels` for `query=all` — the callback is the delivery mechanism.
 
-1. Direct write to `window.intelligence.availableModels` (legacy).
-2. Function call into `window.intelligence.onAvailableModelsLoaded(models)` (current builds).
-
-`onAvailableModelsLoaded` is assigned **eagerly at module load** (not inside `_boot()`, which is lazy on first `run()` / `models.*`). Native can push the catalogue unsolicited at app start, before any SDK call has had a chance to boot, and the callback must already exist to capture that push. Same lifecycle category as `window.focusout` / `window.focusin`. The handler mirrors its payload onto `window.intelligence.availableModels`, so the variable observer used by `models.available()` resolves the same way regardless of which delivery path the native build picks.
-
-The SDK’s `models.available()` triggers a refresh:
+The SDK assigns `onAvailableModelsLoaded` **eagerly at module load** (not inside `_boot()`, which is lazy on first `run()` / `models.*`). Native can push the catalogue unsolicited at app start, before any SDK call has had a chance to boot, and the callback must already exist to capture that push. Same lifecycle category as `window.focusout` / `window.focusin`. The handler mirrors its payload onto `window.intelligence.availableModels` so the variable observer used by `models.available()` resolves.
 
 ```js
-// SDK will fire intelligence://models?query=all and resolve once availableModels updates
+// SDK fires intelligence://models?query=all and resolves once
+// onAvailableModelsLoaded(...) lands and is mirrored onto availableModels.
 const models = await intelligence.models.available()
 ```
 
-#### Installed models (scheme refresh + variable update)
+#### Installed models (scheme refresh + variable update + callback)
 
-Fire **`intelligence://models?query=installed`**. The WebView delivers the result in either of two equivalent ways:
+Fire **`intelligence://models?query=installed`**. Native delivers the installed list two ways simultaneously: it writes **`window.intelligence.installedModels = [...]`** directly **and** calls **`window.intelligence.onInstalledModelsLoaded(models)`**.
 
-1. Direct write to `window.intelligence.installedModels` (legacy `despia-native`-style variable watch).
-2. Function call into `window.intelligence.onInstalledModelsLoaded(models)` (current builds).
-
-`onInstalledModelsLoaded` is assigned **eagerly at module load** (same reasoning as `onAvailableModelsLoaded` above — must exist before any unsolicited native push). The handler mirrors its payload onto `window.intelligence.installedModels`, so the SDK’s variable observer resolves the same way regardless of which path the native build uses.
+The SDK observes the variable (which is sufficient on its own) and also assigns `onInstalledModelsLoaded` **eagerly at module load** for symmetry with the available-models path and to absorb any future build that drops the variable write. The callback handler mirrors its payload onto `window.intelligence.installedModels` so the variable observer resolves regardless of which path fires first.
 
 The npm package pre-clears the array, fires the scheme, and **polls** until `installedModels` becomes a “ready” non-empty snapshot or the value’s signature changes - then resolves (or resolves `[]` after a timeout so the promise never hangs).
 
@@ -653,9 +646,8 @@ The **`despia-intelligence`** npm package builds URLs in **`run`** / **`models`*
 | `appleintelligence://?prompt=<text>` | One-shot inference (iOS only) |
 | `appleintelligence://?prompt=<text>&instructions=<text>&callback=<fn>` | One-shot with instructions + custom callback name |
 | `intelligence://text?id=<uuid>&...` | Streaming text inference (preferred; used by npm) |
-| _(injected)_ `window.intelligence.availableModels` | Supported models snapshot (no scheme required for read) |
-| `intelligence://models?query=all` | Refresh available models; native updates `window.intelligence.availableModels` |
-| `intelligence://models?query=installed` | Refresh installed list; WebView updates `window.intelligence.installedModels` |
+| `intelligence://models?query=all` | Refresh available models; native calls `window.intelligence.onAvailableModelsLoaded(models)` (no variable write) |
+| `intelligence://models?query=installed` | Refresh installed list; WebView writes `window.intelligence.installedModels` and also calls `onInstalledModelsLoaded(models)` |
 | `intelligence://download?model=<id>` | Download a model |
 | `intelligence://remove?model=<id>` | Remove one model |
 | `intelligence://remove?model=all` | Remove all models |
@@ -670,10 +662,10 @@ Older examples may show `intelligence://?id=...` without the `text` segment; the
 | `window.intelligence.onMLToken(id, chunk)` | `chunk` = full text so far | Streaming token snapshot (assign handler on `window.intelligence`) |
 | `window.intelligence.onMLComplete(id, fullText)` | | Streaming complete |
 | `window.intelligence.onMLError({ jobId, errorCode, errorMessage })` | | Streaming / job error |
-| `window.intelligence.availableModels` | `Model[]` | Injected / updated by WebView |
-| `window.intelligence.onAvailableModelsLoaded(models)` | `Model[]` | Optional callback path used by current native builds; SDK mirrors payload onto `availableModels` so `_observe` resolves it |
-| `window.intelligence.installedModels` | `Model[]` | Injected / updated after install/remove and `query=installed`; npm `installed()` uses `_observe` on this |
-| `window.intelligence.onInstalledModelsLoaded(models)` | `Model[]` | Optional callback path used by current native builds; SDK mirrors payload onto `installedModels` so `_observe` resolves it |
+| `window.intelligence.onAvailableModelsLoaded(models)` | `Model[]` | **Sole** delivery for `query=all`. Native does not write `availableModels` for this scheme. SDK mirrors payload onto `availableModels` so `_observe` resolves |
+| `window.intelligence.availableModels` | `Model[]` | Read-only mirror written by the SDK's `onAvailableModelsLoaded` handler. Safe to read for the last snapshot |
+| `window.intelligence.installedModels` | `Model[]` | Written by native after install/remove and `query=installed`; npm `installed()` uses `_observe` on this |
+| `window.intelligence.onInstalledModelsLoaded(models)` | `Model[]` | Also fired by native for `query=installed`; SDK mirrors payload onto `installedModels` for symmetry / forward-compat |
 | `window.intelligence.onDownloadStart(modelId)` | | Download started |
 | `window.intelligence.onDownloadProgress(modelId, pct)` | `pct` usually 0-1 float | Progress tick |
 | `window.intelligence.onDownloadEnd(modelId)` | | Download finished |
@@ -692,8 +684,8 @@ Older examples may show `intelligence://?id=...` without the `text` segment; the
 | npm API | Raw bridge equivalent |
 | --- | --- |
 | `intelligence.run({ type: 'text', ... }, handler)` | Builds URL, enqueues **`window.despia = url`** (same **~1ms** FIFO as **`models.*`**), plus **`window.intelligence.onMLToken` / `onMLComplete` / `onMLError`** assignments; SDK routes by job id |
-| `intelligence.models.available()` | Reads `window.intelligence.availableModels` synchronously (no scheme) |
-| `intelligence.models.installed()` | Pre-clears `installedModels`, `_observe` polls until it changes, `_fire` `query=installed`; resolves `[]` on timeout |
+| `intelligence.models.available()` | Pre-clears `availableModels`, `_observe` polls it, `_fire` `query=all`; native calls `onAvailableModelsLoaded(models)` and the SDK's eager handler mirrors the payload onto `availableModels` so the observer resolves; `[]` on timeout |
+| `intelligence.models.installed()` | Pre-clears `installedModels`, `_observe` polls until it changes, `_fire` `query=installed` (native writes the variable directly and also fires `onInstalledModelsLoaded` which the SDK mirrors); resolves `[]` on timeout |
 | `intelligence.models.download(id, callbacks)` | `intelligence://download?model=<id>` + download callbacks / global events |
 | `intelligence.models.remove(id)` | `intelligence://remove?model=<id>` + remove callbacks |
 | `intelligence.models.removeAll()` | `intelligence://remove?model=all` + remove-all callbacks |
