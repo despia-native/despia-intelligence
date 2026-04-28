@@ -41,7 +41,7 @@ It does not restrict what the native system can do. Adding a new scheme route re
 
 ### How the native bridge works
 
-Schemes are delivered with `window.despia` (the npm package uses a FIFO queue with ~1ms between writes inside `_fire`), not `location.href`. Native intercepts like navigation (iOS `decidePolicyFor`, Android `shouldOverrideUrlLoading`). Inference callbacks live on `window`; model lifecycle uses `window.intelligence` registrars. Full parameters, flows, and tables are in [Raw WebView bridge reference](#raw-webview-bridge-reference) below.
+Schemes are delivered with `window.despia` (the SDK uses a FIFO queue with ~1ms between writes inside `_fire`), not `location.href`. Native intercepts like navigation (iOS `decidePolicyFor`, Android `shouldOverrideUrlLoading`). Callbacks live on `window.intelligence` (native calls them directly). Full parameters, flows, and tables are in [Raw WebView bridge reference](#raw-webview-bridge-reference) below.
 
 ### Runtime detection - `native_runtime` only
 
@@ -212,7 +212,7 @@ Run this on a **real Despia iOS and Android build** that includes Local Intellig
 
 ### Inference (`run`, `type: 'text'`)
 
-- [ ] After first `intelligence.run(...)`, **`typeof window.onMLToken === 'function'`** (and `onMLComplete`, `onMLError`) - SDK `_boot()` wired flat on `window`
+- [ ] After first `intelligence.run(...)`, **`typeof window.intelligence.onMLToken === 'function'`** (and `onMLComplete`, `onMLError`) - SDK `_boot()` wired under `window.intelligence`
 - [ ] Single job: tokens stream; **`stream` handler receives full accumulated text** each time (replace, not append semantics in UI)
 - [ ] **`complete`** fires once with final string; **`onMLError`** path if you force an error - payload includes **`jobId`** when multiple jobs exist
 - [ ] **Two concurrent jobs** with different prompts: each handler only receives its job’s tokens/errors
@@ -251,7 +251,7 @@ Run this on a **real Despia iOS and Android build** that includes Local Intellig
 
 ## Raw WebView bridge reference
 
-**Internal reference.** This document describes the native WebView bridge as a direct contract: scheme URLs fired from JavaScript and callbacks invoked on `window`. It is the conceptual source of truth that [`despia-intelligence`](https://www.npmjs.com/package/despia-intelligence) (the npm package) is built on.
+**Internal reference.** This document describes the native WebView bridge as a direct contract: scheme URLs fired from JavaScript and callbacks invoked in the JS context. It is the conceptual source of truth that [`despia-intelligence`](https://www.npmjs.com/package/despia-intelligence) (the npm package) is built on.
 
 Every public behaviour of the npm package maps to something here. The package does not add capabilities the bridge does not expose; it adds routing, encoding, lifecycle glue, and safety. If you are forking the package, porting to another language, or collaborating on native changes, start here and confirm details with the iOS/Android teams.
 
@@ -266,7 +266,7 @@ Despia runs your web app inside a native WebView shell. The bridge is bidirectio
 - **iOS:** `WebViewController.swift` → `decidePolicyFor navigationAction`
 - **Android:** `MainActivity.java` → `shouldOverrideUrlLoading`
 
-**Native → JS:** two patterns coexist. **Streaming inference** uses **property assignments on `window`**: native calls `window.onMLToken`, `window.onMLComplete`, and `window.onMLError` after you assign them. **Model download / remove / progress** uses **registrar functions on `window.intelligence`** (`onDownloadStart(fn)`, etc.). Lifecycle hooks **`window.focusout` / `window.focusin`** are assigned on `window` by native. No variable injection for tokens; no promise handoff from native for inference.
+**Native → JS:** callbacks are invoked on **`window.intelligence`** directly. **Streaming inference** calls `window.intelligence.onMLToken`, `window.intelligence.onMLComplete`, and `window.intelligence.onMLError` after the SDK assigns them. **Model download / remove / progress** also calls `window.intelligence.onDownload*` / `onRemove*` functions directly (no registrar pattern). Lifecycle hooks **`window.focusout` / `window.focusin`** are assigned on `window` by native. No variable injection for tokens; no promise handoff from native for inference.
 
 Examples below use **`window.despia = '…'`** directly (what the native Xcode / Android Studio WebView exposes). The [`despia-native`](https://www.npmjs.com/package/despia-native) npm package exposes **`despia(url)`** that queues and assigns **`window.despia`**. **`despia-intelligence`** does the same for **`run`** and **`models.*`** only: a short FIFO with **~1ms** between **`window.despia = url`** writes so concurrent calls do not stack in one tick. Prefer **`run`** / **`models`** so encoding and job IDs stay correct. Never **`location.href`** for these schemes.
 
@@ -352,27 +352,29 @@ appleintelligence://?prompt=...&callback=handleAIResponse
 
 **iOS and Android.** Text streaming uses the **`intelligence://`** host with a **`text`** path segment and a query string. The npm package always uses this route for `type: 'text'` (see `TYPES.text.route` in `index.js`).
 
-#### Inference callbacks - flat on `window` (confirmed native)
+#### Inference callbacks - `window.intelligence` (internal native contract)
 
-Streaming inference uses **property assignment on `window`**, not registrar calls on `window.intelligence`. This matches the published Despia reference and what the WebView invokes.
+Streaming inference uses **function assignment on `window.intelligence`** (the SDK assigns the functions; native calls them). This matches the current internal runtime contract.
 
 Assign **once** per page (or compose your own dispatcher). Use the job **`id`** to correlate concurrent streams. **`onMLError`** includes **`jobId`** so you can route errors to the correct handler.
 
 ```js
 const jobId = crypto.randomUUID()
 
-window.onMLToken = function (id, chunk) {
+window.intelligence = window.intelligence || {}
+
+window.intelligence.onMLToken = function (id, chunk) {
   if (id !== jobId) return
   // chunk is the FULL accumulated response so far - replace UI, do not append
   document.getElementById('output').textContent = chunk
 }
 
-window.onMLComplete = function (id, fullText) {
+window.intelligence.onMLComplete = function (id, fullText) {
   if (id !== jobId) return
   console.log('Complete:', fullText)
 }
 
-window.onMLError = function (err) {
+window.intelligence.onMLError = function (err) {
   console.error(err.jobId, err.errorCode, err.errorMessage)
 }
 ```
@@ -413,9 +415,9 @@ window.despia =
 
 Additional keys supported by native may be forwarded as query params; the npm package forwards arbitrary keys on the params object except `type`.
 
-#### Callbacks (inference - `window`)
+#### Callbacks (inference - `window.intelligence`)
 
-Native calls the **`window.onMLToken` / `window.onMLComplete` / `window.onMLError`** functions you assigned.
+Native calls the **`window.intelligence.onMLToken` / `window.intelligence.onMLComplete` / `window.intelligence.onMLError`** functions you assigned.
 
 **`onMLToken(id, chunk)`** - **`chunk`** is the full accumulated text so far, not a delta. Replace the target element’s text; do not append.
 
@@ -437,9 +439,9 @@ Native calls the **`window.onMLToken` / `window.onMLComplete` / `window.onMLErro
 intelligence://text?id=abc&prompt=...
   → native intercepts scheme
   → streaming session for job abc
-  → window.onMLToken('abc', accumulatedText)   // repeats
-  → window.onMLComplete('abc', fullText)       // once
-  → window.onMLError({ jobId, errorCode, errorMessage }) // on failure
+  → window.intelligence.onMLToken('abc', accumulatedText)   // repeats
+  → window.intelligence.onMLComplete('abc', fullText)       // once
+  → window.intelligence.onMLError({ jobId, errorCode, errorMessage }) // on failure
 ```
 
 #### Multiple concurrent jobs
@@ -450,7 +452,7 @@ Use a unique `id` per job and branch inside your `window.onML*` handlers (or mai
 
 ### Scheme 3 - Model management
 
-The WebView injects **`window.intelligence.availableModels`** and **`window.intelligence.installedModels`** as arrays (read synchronously; native updates them after install/remove). Downloads and removes still use **`intelligence://`** URLs **without** a text job `id`. Event delivery uses the same **registrar** pattern as inference.
+The WebView injects **`window.intelligence.availableModels`** and **`window.intelligence.installedModels`** as arrays (read synchronously; native updates them after install/remove). Downloads and removes still use **`intelligence://`** URLs **without** a text job `id`. Event delivery uses **direct native calls** into SDK-assigned `window.intelligence.onDownload*` / `onRemove*` functions.
 
 ```js
 window.intelligence = window.intelligence || {}
@@ -540,7 +542,7 @@ The npm package registers its own `focusout` / `focusin` handlers to snapshot ac
 
 ### Complete raw example (no npm package)
 
-Minimal HTML page showing the same primitives the npm layer uses: runtime gate, registrar callbacks on `window.intelligence`, `intelligence://text` URL, injected model arrays, and optional scheme refresh for installed models. Adjust CDN URLs and error handling for production.
+Minimal HTML page showing the same primitives the SDK uses: runtime gate, callbacks on `window.intelligence`, `intelligence://text` URL, injected model arrays, and optional scheme refresh for installed models. Adjust CDN URLs and error handling for production.
 
 ```html
 <!DOCTYPE html>
@@ -575,26 +577,26 @@ Minimal HTML page showing the same primitives the npm layer uses: runtime gate, 
         })()
 
         function downloadModel() {
-          window.intelligence.onDownloadProgress(function (id, pct) {
+          window.intelligence.onDownloadProgress = function (id, pct) {
             var p = typeof pct === 'number' && pct <= 1 ? Math.round(pct * 100) : Math.round(pct)
             document.getElementById('output').textContent = 'Downloading: ' + p + '%'
-          })
-          window.intelligence.onDownloadEnd(function () {
+          }
+          window.intelligence.onDownloadEnd = function () {
             runInference()
-          })
+          }
           window.despia = 'intelligence://download?model=qwen3_0_6b'
         }
 
         function runInference() {
           var jobId = crypto.randomUUID()
 
-          window.onMLToken = function (id, chunk) {
+          window.intelligence.onMLToken = function (id, chunk) {
             if (id === jobId) document.getElementById('output').textContent = chunk
           }
-          window.onMLComplete = function (id, fullText) {
+          window.intelligence.onMLComplete = function (id, fullText) {
             if (id === jobId) console.log('done', fullText)
           }
-          window.onMLError = function (err) {
+          window.intelligence.onMLError = function (err) {
             console.error(err && err.errorCode, err && err.errorMessage)
           }
 
@@ -651,19 +653,19 @@ Older examples may show `intelligence://?id=...` without the `text` segment; the
 | Mechanism | Arguments / shape | When |
 | --- | --- | --- |
 | `window[callback](response)` | `response: string` | One-shot (`appleintelligence://`) success or error string |
-| `window.onMLToken(id, chunk)` | `chunk` = full text so far | Streaming token snapshot (assign handler on `window`) |
-| `window.onMLComplete(id, fullText)` | | Streaming complete |
-| `window.onMLError({ jobId, errorCode, errorMessage })` | | Streaming / job error |
+| `window.intelligence.onMLToken(id, chunk)` | `chunk` = full text so far | Streaming token snapshot (assign handler on `window.intelligence`) |
+| `window.intelligence.onMLComplete(id, fullText)` | | Streaming complete |
+| `window.intelligence.onMLError({ jobId, errorCode, errorMessage })` | | Streaming / job error |
 | `window.intelligence.availableModels` | `Model[]` | Injected / updated by WebView |
 | `window.intelligence.installedModels` | `Model[]` | Injected / updated after install/remove and `query=installed`; npm `installed()` uses `_observe` on this |
-| `window.intelligence.onDownloadStart(fn)` → `fn(modelId)` | | Download started |
-| `window.intelligence.onDownloadProgress(fn)` → `fn(modelId, pct)` | `pct` usually 0-1 float | Progress tick |
-| `window.intelligence.onDownloadEnd(fn)` → `fn(modelId)` | | Download finished |
-| `window.intelligence.onDownloadError(fn)` → `fn(modelId, err)` | `err: string` | Download failed |
-| `window.intelligence.onRemoveSuccess(fn)` → `fn(modelId)` | | Remove succeeded |
-| `window.intelligence.onRemoveError(fn)` → `fn(modelId, err)` | | Remove failed |
-| `window.intelligence.onRemoveAllSuccess(fn)` → `fn()` | | Remove all succeeded |
-| `window.intelligence.onRemoveAllError(fn)` → `fn(err)` | | Remove all failed |
+| `window.intelligence.onDownloadStart(modelId)` | | Download started |
+| `window.intelligence.onDownloadProgress(modelId, pct)` | `pct` usually 0-1 float | Progress tick |
+| `window.intelligence.onDownloadEnd(modelId)` | | Download finished |
+| `window.intelligence.onDownloadError(modelId, err)` | `err: string` | Download failed |
+| `window.intelligence.onRemoveSuccess(modelId)` | | Remove succeeded |
+| `window.intelligence.onRemoveError(modelId, err)` | | Remove failed |
+| `window.intelligence.onRemoveAllSuccess()` | | Remove all succeeded |
+| `window.intelligence.onRemoveAllError(err)` | | Remove all failed |
 | `window.focusout()` | - | App backgrounding (direct `window` hook) |
 | `window.focusin()` | - | App foregrounding (direct `window` hook) |
 
@@ -673,7 +675,7 @@ Older examples may show `intelligence://?id=...` without the `text` segment; the
 
 | npm API | Raw bridge equivalent |
 | --- | --- |
-| `intelligence.run({ type: 'text', ... }, handler)` | Builds URL, enqueues **`window.despia = url`** (same **~1ms** FIFO as **`models.*`**), plus **`window.onMLToken` / `onMLComplete` / `onMLError`** assignments; SDK routes by job id |
+| `intelligence.run({ type: 'text', ... }, handler)` | Builds URL, enqueues **`window.despia = url`** (same **~1ms** FIFO as **`models.*`**), plus **`window.intelligence.onMLToken` / `onMLComplete` / `onMLError`** assignments; SDK routes by job id |
 | `intelligence.models.available()` | Reads `window.intelligence.availableModels` synchronously (no scheme) |
 | `intelligence.models.installed()` | Pre-clears `installedModels`, `_observe` polls until it changes, `_fire` `query=installed`; resolves `[]` on timeout |
 | `intelligence.models.download(id, callbacks)` | `intelligence://download?model=<id>` + download callbacks / global events |
@@ -682,7 +684,7 @@ Older examples may show `intelligence://?id=...` without the `text` segment; the
 | `intelligence.on('downloadEnd', fn)` etc. | Same native events as `onDownloadEnd`; the package fans out through an internal listener list |
 | Auto-resume after background | Package-owned `window.focusout` / `window.focusin` that re-call `run()` for interrupted jobs (each URL goes through the same **`window.despia`** queue) and restore download callback maps |
 
-The package adds: stable **`encodeURIComponent`** query building (no `+` for spaces), UUID generation, per-job handler tables, **`try`/`catch` around user handlers**, `focusout`/`focusin` orchestration, normalised download progress (0-100), a thin **FIFO + ~1ms** spacer before each **`window.despia = url`** inside **`_fire`**, and **`_boot()`** wiring for **`window.onML*`** and **`window.intelligence.onDownload*` / `onRemove*`**. Both match native.
+The package adds: stable **`encodeURIComponent`** query building (no `+` for spaces), UUID generation, per-job handler tables, **`try`/`catch` around user handlers**, `focusout`/`focusin` orchestration, normalised download progress (0-100), a thin **FIFO + ~1ms** spacer before each **`window.despia = url`** inside **`_fire`**, and **`_boot()`** wiring for **`window.intelligence.onML*`** and **`window.intelligence.onDownload*` / `onRemove*`**. Both match native.
 
 ---
 

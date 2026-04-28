@@ -18,20 +18,7 @@ function stubRegister(registry, name) {
 function loadInDespiaBridgeContext(options) {
   const hrefLog = [];
   const nativeReg = {};
-  const names = [
-    'onDownloadStart',
-    'onDownloadProgress',
-    'onDownloadEnd',
-    'onDownloadError',
-    'onRemoveSuccess',
-    'onRemoveError',
-    'onRemoveAllSuccess',
-    'onRemoveAllError',
-  ];
   const intelligence = {};
-  for (let i = 0; i < names.length; i += 1) {
-    intelligence[names[i]] = stubRegister(nativeReg, names[i]);
-  }
   if (options && options.availableModels) {
     intelligence.availableModels = options.availableModels;
   }
@@ -128,9 +115,9 @@ test('Despia WebView context: runtime ready and run fires intelligence:// URL', 
   assert.match(hrefLog[0], /prompt=Hello%20world/);
   assert.match(hrefLog[0], /model=m/);
   assert.match(hrefLog[0], /id=11111111-1111-4111-8111-111111111111/);
-  assert.equal(typeof window.onMLToken, 'function');
-  assert.equal(typeof window.onMLComplete, 'function');
-  assert.equal(typeof window.onMLError, 'function');
+  assert.equal(typeof window.intelligence.onMLToken, 'function');
+  assert.equal(typeof window.intelligence.onMLComplete, 'function');
+  assert.equal(typeof window.intelligence.onMLError, 'function');
 });
 
 test('Despia WebView context: unknown type throws', () => {
@@ -149,20 +136,20 @@ test('Despia WebView context: disabled type throws with clear message', () => {
   );
 });
 
-test('Despia WebView context: download event on/off via native registrar', () => {
-  const { intelligence, nativeReg } = loadInDespiaBridgeContext();
+test('Despia WebView context: download event on/off via native callback', () => {
+  const { intelligence, window } = loadInDespiaBridgeContext();
   intelligence.run({ type: 'text', model: 'm', prompt: 'boot' }, {});
 
-  assert.ok(typeof nativeReg.onDownloadStart === 'function', '_boot registers onDownloadStart');
+  assert.ok(typeof window.intelligence.onDownloadStart === 'function', '_boot wires onDownloadStart');
 
   let n = 0;
   const off = intelligence.on('downloadStart', () => {
     n += 1;
   });
-  nativeReg.onDownloadStart('model-a');
+  window.intelligence.onDownloadStart('model-a');
   assert.equal(n, 1);
   off();
-  nativeReg.onDownloadStart('model-b');
+  window.intelligence.onDownloadStart('model-b');
   assert.equal(n, 1);
 });
 

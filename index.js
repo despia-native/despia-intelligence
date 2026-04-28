@@ -9,8 +9,11 @@
 }(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
-  // --- Bridge: window.despia (native setter). FIFO ~1ms between assignments so bursts
+  // --- Bridge: prefer window.despia (native setter). FIFO ~1ms between assignments so bursts
   // never set the property twice in the same synchronous turn.
+  //
+  // Internal runtimes may also support scheme navigation interception; we keep a fallback
+  // that matches the raw HTML test page pattern (hidden iframe).
 
   var _despiaQueue      = [];
   var _despiaProcessing = false;
@@ -21,7 +24,25 @@
     var item = _despiaQueue.shift();
     var url = item && item.url;
     try {
-      if (typeof window !== 'undefined' && url != null) window.despia = url;
+      if (typeof window !== 'undefined' && url != null) {
+        // Primary: native setter interception.
+        if ('despia' in window) {
+          window.despia = url;
+        } else {
+          // Fallback: navigation interception (matches internal raw HTML page).
+          var iframe = document && document.createElement ? document.createElement('iframe') : null;
+          if (iframe && document && document.body && document.body.appendChild) {
+            iframe.style.display = 'none';
+            iframe.src = url;
+            document.body.appendChild(iframe);
+            if (typeof setTimeout !== 'undefined') {
+              setTimeout(function () {
+                try { if (iframe && iframe.remove) iframe.remove(); } catch (e) {}
+              }, 200);
+            }
+          }
+        }
+      }
     } catch (e) {
       if (typeof console !== 'undefined' && console.error) {
         console.error('[despia-intelligence] Despia command failed:', e);
@@ -254,7 +275,7 @@
 
   }
 
-  // --- Boot: window.onML* for streaming; window.intelligence.on* registrars for models.
+  // --- Boot: native calls window.intelligence.* directly (internal bridge contract).
 
   function _boot() {
     if (_booted || !_rt.ok) return;
@@ -262,14 +283,15 @@
 
     if (!window.intelligence) window.intelligence = {};
 
-    window.onMLToken = function (id, chunk) {
+    // Streaming inference (native calls these directly).
+    window.intelligence.onMLToken = function (id, chunk) {
       var job = _jobs[id];
       if (job && job.handler && job.handler.stream) {
         try { job.handler.stream(chunk); } catch (e) {}
       }
     };
 
-    window.onMLComplete = function (id, fullText) {
+    window.intelligence.onMLComplete = function (id, fullText) {
       var job = _jobs[id];
       if (job) {
         if (job.handler && job.handler.complete) {
@@ -280,7 +302,7 @@
       }
     };
 
-    window.onMLError = function (err) {
+    window.intelligence.onMLError = function (err) {
       var jobId = err && err.jobId;
       var job   = _jobs[jobId];
       if (job) {
@@ -292,13 +314,14 @@
       }
     };
 
-    window.intelligence.onDownloadStart(function (modelId) {
+    // Model lifecycle events (native calls these directly).
+    window.intelligence.onDownloadStart = function (modelId) {
       var cb = _downloads[modelId];
       if (cb && cb.onStart) try { cb.onStart(); } catch (e) {}
       _emit('downloadStart', modelId);
-    });
+    };
 
-    window.intelligence.onDownloadProgress(function (modelId, pct) {
+    window.intelligence.onDownloadProgress = function (modelId, pct) {
       // Native often sends 0-1; tolerate 0-100.
       var percent = pct;
       if (typeof percent === 'number') {
@@ -310,39 +333,39 @@
       var cb = _downloads[modelId];
       if (cb && cb.onProgress) try { cb.onProgress(percent); } catch (e) {}
       _emit('downloadProgress', modelId, percent);
-    });
+    };
 
-    window.intelligence.onDownloadEnd(function (modelId) {
+    window.intelligence.onDownloadEnd = function (modelId) {
       var cb = _downloads[modelId];
       if (cb && cb.onEnd) try { cb.onEnd(); } catch (e) {}
       delete _downloads[modelId];
       delete _pendingDownloads[modelId];
       _emit('downloadEnd', modelId);
-    });
+    };
 
-    window.intelligence.onDownloadError(function (modelId, err) {
+    window.intelligence.onDownloadError = function (modelId, err) {
       var cb = _downloads[modelId];
       if (cb && cb.onError) try { cb.onError(err); } catch (e) {}
       delete _downloads[modelId];
       delete _pendingDownloads[modelId];
       _emit('downloadError', modelId, err);
-    });
+    };
 
-    window.intelligence.onRemoveSuccess(function (modelId) {
+    window.intelligence.onRemoveSuccess = function (modelId) {
       if (_removes[modelId]) { _removes[modelId].resolve(); delete _removes[modelId]; }
-    });
+    };
 
-    window.intelligence.onRemoveError(function (modelId, err) {
+    window.intelligence.onRemoveError = function (modelId, err) {
       if (_removes[modelId]) { _removes[modelId].reject(new Error(err)); delete _removes[modelId]; }
-    });
+    };
 
-    window.intelligence.onRemoveAllSuccess(function () {
+    window.intelligence.onRemoveAllSuccess = function () {
       if (_removeAll) { _removeAll.resolve(); _removeAll = null; }
-    });
+    };
 
-    window.intelligence.onRemoveAllError(function (err) {
+    window.intelligence.onRemoveAllError = function (err) {
       if (_removeAll) { _removeAll.reject(new Error(err)); _removeAll = null; }
-    });
+    };
   }
 
   function run(params, handler) {
