@@ -204,11 +204,27 @@ test('models.installed fires scheme and resolves after installedModels changes',
   assert.deepEqual(window.intelligence.installedModels, list);
 });
 
-test('_boot wires onAvailableModelsLoaded and onInstalledModelsLoaded callbacks', () => {
-  const { intelligence, window } = loadInDespiaBridgeContext();
-  intelligence.run({ type: 'text', model: 'm', prompt: 'boot' }, {});
+test('onAvailableModelsLoaded and onInstalledModelsLoaded are wired eagerly at module load (not lazy-boot)', () => {
+  // No intelligence.run() and no models.* call. These callbacks must already
+  // exist so unsolicited catalogue pushes from native at app start are
+  // captured even before the first SDK call lazy-boots.
+  const { window } = loadInDespiaBridgeContext();
   assert.equal(typeof window.intelligence.onAvailableModelsLoaded, 'function');
   assert.equal(typeof window.intelligence.onInstalledModelsLoaded, 'function');
+});
+
+test('models.available fast-path resolves an unsolicited onAvailableModelsLoaded push from native', async () => {
+  // Simulate native pushing the catalogue at app start, before any SDK call.
+  const { intelligence, hrefLog, window } = loadInDespiaBridgeContext();
+  window.intelligence.onAvailableModelsLoaded([
+    { id: 'pre-a', name: 'Pre-A', category: 'text' },
+  ]);
+  const list = await intelligence.models.available();
+  // Fast path: cached non-empty array, no scheme refresh fired.
+  assert.equal(hrefLog.length, 0);
+  assert.equal(list.length, 1);
+  assert.equal(list[0].id, 'pre-a');
+  assert.deepEqual(window.intelligence.availableModels, list);
 });
 
 test('models.available resolves when native delivers via onAvailableModelsLoaded', async () => {

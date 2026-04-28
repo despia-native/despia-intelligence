@@ -216,6 +216,25 @@
 
   if (typeof window !== 'undefined') {
 
+    // Catalogue-load callbacks are assigned eagerly at module load (not in
+    // _boot) because native can push window.intelligence.onAvailableModelsLoaded
+    // / onInstalledModelsLoaded at app start, before any SDK call has had a
+    // chance to lazy-boot. Same precedent as window.focusout / window.focusin
+    // below. They mirror the payload onto availableModels / installedModels so
+    // the variable observer used by models.available() / models.installed()
+    // resolves regardless of which delivery path the native build picks.
+    if (!window.intelligence) window.intelligence = {};
+
+    window.intelligence.onAvailableModelsLoaded = function (models) {
+      if (!window.intelligence) window.intelligence = {};
+      window.intelligence.availableModels = Array.isArray(models) ? models : [];
+    };
+
+    window.intelligence.onInstalledModelsLoaded = function (models) {
+      if (!window.intelligence) window.intelligence = {};
+      window.intelligence.installedModels = Array.isArray(models) ? models : [];
+    };
+
     window.focusout = function () {
       Object.keys(_jobs).forEach(function (id) {
         var job = _jobs[id];
@@ -346,19 +365,6 @@
 
     window.intelligence.onRemoveAllError = function (err) {
       if (_removeAll) { _removeAll.reject(new Error(err)); _removeAll = null; }
-    };
-
-    // Catalogue delivery: native may set window.intelligence.availableModels /
-    // installedModels directly OR call these loaded-callbacks. Mirror the
-    // payload onto the variable so _observe picks it up either way.
-    window.intelligence.onAvailableModelsLoaded = function (models) {
-      if (!window.intelligence) window.intelligence = {};
-      window.intelligence.availableModels = Array.isArray(models) ? models : [];
-    };
-
-    window.intelligence.onInstalledModelsLoaded = function (models) {
-      if (!window.intelligence) window.intelligence = {};
-      window.intelligence.installedModels = Array.isArray(models) ? models : [];
     };
   }
 

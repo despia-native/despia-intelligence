@@ -465,7 +465,7 @@ The native layer delivers the catalogue in either of two equivalent ways:
 1. Direct write to `window.intelligence.availableModels` (legacy).
 2. Function call into `window.intelligence.onAvailableModelsLoaded(models)` (current builds).
 
-`_boot()` wires `onAvailableModelsLoaded` to mirror its payload onto `window.intelligence.availableModels`, so the variable observer used by `models.available()` resolves the same way regardless of which delivery path the native build picks.
+`onAvailableModelsLoaded` is assigned **eagerly at module load** (not inside `_boot()`, which is lazy on first `run()` / `models.*`). Native can push the catalogue unsolicited at app start, before any SDK call has had a chance to boot, and the callback must already exist to capture that push. Same lifecycle category as `window.focusout` / `window.focusin`. The handler mirrors its payload onto `window.intelligence.availableModels`, so the variable observer used by `models.available()` resolves the same way regardless of which delivery path the native build picks.
 
 The SDK’s `models.available()` triggers a refresh:
 
@@ -481,7 +481,7 @@ Fire **`intelligence://models?query=installed`**. The WebView delivers the resul
 1. Direct write to `window.intelligence.installedModels` (legacy `despia-native`-style variable watch).
 2. Function call into `window.intelligence.onInstalledModelsLoaded(models)` (current builds).
 
-`_boot()` wires `onInstalledModelsLoaded` to mirror its payload onto `window.intelligence.installedModels`, so the SDK’s variable observer resolves the same way regardless of which path the native build uses.
+`onInstalledModelsLoaded` is assigned **eagerly at module load** (same reasoning as `onAvailableModelsLoaded` above — must exist before any unsolicited native push). The handler mirrors its payload onto `window.intelligence.installedModels`, so the SDK’s variable observer resolves the same way regardless of which path the native build uses.
 
 The npm package pre-clears the array, fires the scheme, and **polls** until `installedModels` becomes a “ready” non-empty snapshot or the value’s signature changes - then resolves (or resolves `[]` after a timeout so the promise never hangs).
 
