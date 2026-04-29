@@ -8,6 +8,7 @@ Internal documentation for maintainers and native integrators. Not published on 
   - [What this package is](#what-this-package-is)
   - [How the native bridge works](#how-the-native-bridge-works)
   - [Runtime detection](#runtime-detection)
+  - [App lifecycle (suspend / resume)](#app-lifecycle-suspend--resume)
   - [TYPES config](#types-config---single-source-of-truth)
   - [Internal state reference](#internal-state-reference)
   - [Rules](#rules---non-negotiable)
@@ -22,11 +23,12 @@ Internal documentation for maintainers and native integrators. Not published on 
 
 ### What this package is
 
-A thin wrapper around the Despia Local Intelligence WebView bridge. It does three things and nothing else:
+A thin wrapper around the Despia Local Intelligence WebView bridge. It does four things and nothing else:
 
 1. Serialises params to an `intelligence://` URL and assigns it to **`window.despia`** in `_fire`. One assignment per call. No queue, no `iframe`, no `location.href`.
 2. Generates and manages job IDs invisibly.
 3. Wires native callbacks on **`window.intelligence.*`** at module load and routes them to per-call handlers / event listeners.
+4. Auto-resumes every interrupted inference job on app return via `window.focusout` / `window.focusin` (suspend case; JS context alive).
 
 It does not restrict what the native runtime can do. Adding a new scheme route requires zero changes to any function — only the `TYPES` config at the top of `index.js`.
 
@@ -57,6 +59,28 @@ Resolved once at import time. There is no `intelligence_available` flag.
 | `'despia'` | `'ready'` | `true` |
 | not set, UA includes `'despia'` | `'outdated'` | `false` |
 | not set, UA clean | `'unavailable'` | `false` |
+
+---
+
+### App lifecycle (suspend / resume)
+
+Inference sessions do not survive backgrounding — native tears the inference context down before the OS suspends the WebView. The SDK auto-resumes them on return.
+
+**Mechanism.** Native invokes `window.focusout` / `window.focusin` synchronously from `applicationDidEnterBackground` / `applicationWillEnterForeground` (iOS) and `onPause` / `onResume` (Android), while the JS thread is still alive. We do not use `visibilitychange` — it competes with OS suspension and can be delayed or dropped on real devices.
+
+**On `focusout`:** every entry in `_jobs` is copied into `_pending`, then `_jobs` is cleared. Each entry already carries `{ handler, intent }` from the original `run()` call.
+
+**On `focusin`:** `_pending` is swapped to a local and cleared in a single step (so a `cancel()` landing during the resume loop cannot re-queue itself), then each saved entry is re-fired via `run(intent, handler)`. The new call gets a fresh native session and a new job id; the same handler receives the new tokens.
+
+**Three things remove a job from `_pending`:**
+
+1. `onMLComplete` — already removed from `_jobs` before `focusout` would copy it.
+2. `onMLError` — same.
+3. `call.cancel()` — explicitly clears both `_jobs[id]` and `_pending[id]`.
+
+**Scope.** This covers the suspend case only (process alive, JS paused). If the OS fully kills the WebView process, JS memory is gone and the SDK has nothing to resume from on relaunch — that case is the consumer app's responsibility. We do not persist `_pending` to storage.
+
+**Downloads are different.** They continue natively via `NSURLSession` / `WorkManager`, so we do not snapshot `_downloads` and we do not re-fire downloads on `focusin`. Re-firing would start a duplicate download. The original session callbacks remain registered and resume firing on return; `onProgress` is not replayed for time spent backgrounded (no source of truth for the percentage between the last real tick and the next one).
 
 ---
 
@@ -98,8 +122,9 @@ var TYPES = {
 
 | Variable | Type | Purpose |
 |---|---|---|
-| `_jobs` | `{}` | `jobId → { handler }`. Active inference jobs. Deleted on complete, error, cancel. |
-| `_downloads` | `{}` | `modelId → session callbacks`. Active downloads. Deleted on `onDownloadEnd` / `onDownloadError`. |
+| `_jobs` | `{}` | `jobId → { handler, intent }`. Active inference jobs. Deleted on complete, error, cancel. Cleared on `focusout` (entries copied to `_pending` first). |
+| `_pending` | `{}` | `jobId → { handler, intent }`. Jobs interrupted by app background. Populated on `focusout`, drained and re-fired on `focusin`. Also cleared by `cancel()`. |
+| `_downloads` | `{}` | `modelId → session callbacks`. Active downloads. Deleted on `onDownloadEnd` / `onDownloadError`. **Not** cleared on `focusout` (downloads keep running natively). |
 | `_removes` | `{}` | `modelId → { resolve, reject }`. Pending remove promises. |
 | `_removeAll` | `null \| object` | Pending removeAll promise. One at a time. |
 | `_availableWaiters` | `[]` | Resolvers waiting for `onAvailableModelsLoaded`. Drained on each callback fire. |
@@ -119,7 +144,11 @@ var TYPES = {
 - No `console.log` in normal paths. The only allowed log is `console.error('[despia-intelligence] Despia command failed:', e)` when the `window.despia` assignment throws.
 - No retry logic — the native layer handles retries.
 - No `init()`, `setup()`, or `configure()`.
-- Do not add `visibilitychange` / `pagehide` / `beforeunload` listeners. Lifecycle is handled natively. The SDK does not snapshot or auto-resume jobs.
+- Do not add `visibilitychange` / `pagehide` / `beforeunload` listeners. Lifecycle is handled by native-injected `window.focusout` / `window.focusin`.
+- Do not collapse `_pending` back to a single slot — the map is load-bearing; concurrent jobs must all resume.
+- Do not clear `_downloads` on `focusout`. The download is still in progress natively and callbacks must keep routing if the app returns quickly.
+- Do not try to re-fire downloads on `focusin` the way inference jobs are re-fired. NSURLSession / WorkManager own the transfer; re-firing would start a duplicate.
+- Do not persist `_pending` to storage to cover the WebView-killed case. The consumer app already has the prompt and UI state to re-call `run()` on relaunch.
 - Do not stub future types. They live in `TYPES` with `enabled: false`.
 
 ---
@@ -146,6 +175,12 @@ Run on a real Despia iOS and Android build that includes Local Intelligence befo
 - [ ] `await intelligence.models.installed()` resolves after `onInstalledModelsLoaded`; empty array is valid
 - [ ] Download: `onStart` / `onProgress` (0-100) / `onEnd` or `onError`
 - [ ] `remove` / `removeAll`: promise resolves; `installedModels` updates after a fresh `installed()`
+
+**Lifecycle**
+
+- [ ] Home button mid-generation: on return, interrupted jobs **resume** without app code re-calling `run` for those intents
+- [ ] Multiple concurrent jobs: all resume after a single suspend/foreground cycle
+- [ ] `call.cancel()` called while in BG: that job does not resume on return
 
 **Release hygiene**
 

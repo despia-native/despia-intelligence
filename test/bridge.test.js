@@ -48,9 +48,16 @@ function loadInDespiaBridgeContext(options) {
     setTimeout,
     clearTimeout,
     Date,
-    crypto: {
-      randomUUID() { return '11111111-1111-4111-8111-111111111111'; },
-    },
+    crypto: (function () {
+      var n = 0;
+      return {
+        randomUUID() {
+          n += 1;
+          var hex = n.toString(16).padStart(8, '0');
+          return hex + '-1111-4111-8111-111111111111';
+        },
+      };
+    }()),
     define: undefined,
   };
   sandbox.globalThis = sandbox;
@@ -104,7 +111,7 @@ test('Despia WebView context: run fires intelligence://text via window.despia', 
   assert.match(hrefLog[0], /^intelligence:\/\/text\?/);
   assert.match(hrefLog[0], /prompt=Hello%20world/);
   assert.match(hrefLog[0], /model=m/);
-  assert.match(hrefLog[0], /id=11111111-1111-4111-8111-111111111111/);
+  assert.match(hrefLog[0], /id=00000001-1111-4111-8111-111111111111/);
 });
 
 test('streaming callbacks route token / complete / error to handler', () => {
@@ -117,24 +124,25 @@ test('streaming callbacks route token / complete / error to handler', () => {
     complete: (t) => { final = t; },
     error:    (e) => { errored = e; },
   });
-  const id = '11111111-1111-4111-8111-111111111111';
-  window.intelligence.onMLToken(id, 'Hel');
-  window.intelligence.onMLToken(id, 'Hello');
-  window.intelligence.onMLComplete(id, 'Hello world');
+  const id1 = '00000001-1111-4111-8111-111111111111';
+  window.intelligence.onMLToken(id1, 'Hel');
+  window.intelligence.onMLToken(id1, 'Hello');
+  window.intelligence.onMLComplete(id1, 'Hello world');
   assert.equal(chunks, 'Hello');
   assert.equal(final, 'Hello world');
   assert.equal(errored, null);
 
   // After complete, onMLToken should not throw / leak.
-  window.intelligence.onMLToken(id, 'after');
+  window.intelligence.onMLToken(id1, 'after');
   assert.equal(chunks, 'Hello');
 
-  // Error path on a fresh job.
+  // Error path on a fresh job (next UUID).
   let err2 = null;
   intelligence.run({ type: 'text', model: 'm', prompt: 'p2' }, {
     error: (e) => { err2 = e; },
   });
-  window.intelligence.onMLError({ jobId: id, errorCode: 7, errorMessage: 'invalid model id' });
+  const id2 = '00000002-1111-4111-8111-111111111111';
+  window.intelligence.onMLError({ jobId: id2, errorCode: 7, errorMessage: 'invalid model id' });
   assert.equal(err2.code, 7);
   assert.equal(err2.message, 'invalid model id');
 });
@@ -225,4 +233,68 @@ test('models.installed fires query=installed and resolves on onInstalledModelsLo
   assert.equal(list.length, 1);
   assert.equal(list[0].id, 'm1');
   assert.deepEqual(window.intelligence.installedModels, list);
+});
+
+test('lifecycle: focusout snapshots active jobs and focusin re-fires them with same intent', () => {
+  const { intelligence, hrefLog, window } = loadInDespiaBridgeContext();
+
+  let chunks = '';
+  let completed = null;
+  intelligence.run({ type: 'text', model: 'm', prompt: 'long essay' }, {
+    stream:   (c) => { chunks = c; },
+    complete: (t) => { completed = t; },
+  });
+  assert.equal(hrefLog.length, 1);
+  assert.match(hrefLog[0], /prompt=long%20essay/);
+  assert.match(hrefLog[0], /id=00000001-/);
+
+  // App backgrounds.
+  window.focusout();
+
+  // Native session for the old id is dead; further callbacks for it must be no-ops.
+  window.intelligence.onMLToken('00000001-1111-4111-8111-111111111111', 'leftover');
+  assert.equal(chunks, '');
+
+  // App returns. SDK re-fires run() with the same intent and a new id.
+  window.focusin();
+  assert.equal(hrefLog.length, 2);
+  assert.match(hrefLog[1], /prompt=long%20essay/);
+  assert.match(hrefLog[1], /id=00000002-/);
+
+  // The same handler now receives tokens for the new id and completes.
+  window.intelligence.onMLToken('00000002-1111-4111-8111-111111111111', 'Hello');
+  window.intelligence.onMLComplete('00000002-1111-4111-8111-111111111111', 'Hello world');
+  assert.equal(chunks, 'Hello');
+  assert.equal(completed, 'Hello world');
+});
+
+test('lifecycle: cancelled job does not resume after focusin', () => {
+  const { intelligence, hrefLog, window } = loadInDespiaBridgeContext();
+
+  const call = intelligence.run({ type: 'text', model: 'm', prompt: 'cancel-me' }, {});
+  assert.equal(hrefLog.length, 1);
+
+  window.focusout();
+  // User cancels while in BG (e.g. the SDK consumer holds the call handle and
+  // the JS thread runs again before focusin — defensive case).
+  call.cancel();
+
+  window.focusin();
+  assert.equal(hrefLog.length, 1, 'cancelled job must not be re-fired');
+});
+
+test('lifecycle: many concurrent jobs all resume on focusin', () => {
+  const { intelligence, hrefLog, window } = loadInDespiaBridgeContext();
+  const prompts = ['intro', 'history', 'handshake'];
+  prompts.forEach((p) => intelligence.run({ type: 'text', model: 'm', prompt: p }, {}));
+  assert.equal(hrefLog.length, 3);
+
+  window.focusout();
+  window.focusin();
+
+  assert.equal(hrefLog.length, 6);
+  prompts.forEach((p) => {
+    const found = hrefLog.slice(3).some((u) => u.indexOf('prompt=' + p) !== -1);
+    assert.ok(found, 'expected resumed URL for prompt=' + p);
+  });
 });

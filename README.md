@@ -33,6 +33,7 @@ Shipping an AI feature in a web app today means piping every prompt, every piece
 
 - `intelligence.run({ type: 'text', model, prompt }, handler)` - one call, streaming tokens back to your handler.
 - Automatic model download with progress events. Downloads continue while the app is closed via `NSURLSession` on iOS and `WorkManager` on Android.
+- Auto-resume on suspend/foreground. User taps home, comes back a few seconds later — every active job re-fires automatically with the same params and the same handler.
 - No `init()`, no config file, no bundler plugin, no native install step.
 - Same code on iOS and Android.
 
@@ -69,6 +70,7 @@ If you maintain native code or fork this repo, **[INTERNALS.md](INTERNALS.md)** 
 - [API Reference](#api-reference)
 - [Text Inference](#text-inference)
 - [Concurrent Jobs](#concurrent-jobs)
+- [Background and Return](#background-and-return)
 - [Models](#models)
 - [Download Events](#download-events)
 - [Available Models](#available-models)
@@ -164,6 +166,7 @@ If you are an AI coding agent generating code against this SDK, follow these rul
 - Import as a default: `import intelligence from 'despia-intelligence'`
 - Gate calls with `intelligence.runtime.ok`. Display `intelligence.runtime.message` when it is false. Do not invent your own status strings.
 - Use **`intelligence.run`** / **`models`** for all scheme traffic; do not use **`window.location.href`** for **`intelligence://`** schemes (the package uses **`window.despia`** via **`_fire`**).
+- Do not implement your own `visibilitychange`, `pagehide`, or `beforeunload` persistence for inference. The SDK already auto-resumes every active job via `window.focusout` and `window.focusin` called by the native layer (suspend case — see [Background and Return](#background-and-return)).
 - `stream(chunk)` receives the full accumulated text so far, not a delta. Replace the DOM content, do not append.
 - Use `intelligence.models.available()` to read installable models at runtime. Do not hardcode model lists; new models ship over the air without an SDK upgrade.
 - For a model that is not yet installed, call `intelligence.models.download(id, callbacks)` first. The `onProgress` callback delivers percentage updates. Downloads survive backgrounding.
@@ -281,7 +284,40 @@ sections.forEach((section) => {
 
 Whether the native layer actually runs N streams in parallel or queues them internally is a native-side concern and probably device-dependent. From the JS side, the contract is simple: every job you fire is tracked, native streams back to the right handler by job id.
 
-> **Backgrounding.** Inference sessions do not survive when the OS suspends the WebView, and this SDK does **not** auto-resume them. If you need resume semantics, listen to native lifecycle hooks yourself and re-call `intelligence.run(call.intent, handler)` for any in-flight calls.
+---
+
+## Background and Return
+
+Inference sessions do not survive backgrounding — the native inference context is torn down when iOS or Android suspend the WebView. **The SDK handles this for you.** When the user hits home, opens another app, and comes back, every in-flight job is re-fired automatically with the same params and the same handler. Zero developer code, any number of concurrent jobs.
+
+```js
+intelligence.run({
+  type:   'text',
+  model:  'qwen3-0.6b',
+  prompt: 'Write me a long essay on TCP.',
+  stream: true,
+}, {
+  stream:   (chunk) => output.textContent = chunk,
+  complete: (text)  => save(text),
+});
+```
+
+User hits home, replies to a friend in another app, comes back. The stream restarts from scratch with a fresh native session and a new job id, but the same handler — the SDK routes the new tokens to it transparently.
+
+**How it works under the hood**
+
+The native layer fires `window.focusout` from `applicationDidEnterBackground` (iOS) and `onPause` (Android) **synchronously, while the JS thread is still alive**. The SDK uses that window to copy every active job into an internal `_pending` map, then clears `_jobs`. When the app returns, `window.focusin` fires from `applicationWillEnterForeground` / `onResume`, the SDK drains `_pending`, and re-calls `run(intent, handler)` for each entry.
+
+Standard `visibilitychange` is not used because it can be delayed or skipped entirely on real device suspensions. The native lifecycle hooks run before suspension begins.
+
+**Rules**
+
+- Jobs that **complete normally** never re-fire. They were removed from `_jobs` on `onMLComplete` before `focusout` ever ran.
+- Jobs that **error out** never re-fire. Removed by `onMLError`.
+- Jobs you **explicitly `.cancel()`** never re-fire — `cancel()` clears both `_jobs` and `_pending`.
+- **Any number of concurrent jobs** all resume.
+- This covers the suspend case (process alive, JS paused). If the OS fully kills the WebView process during background, JS memory is gone and the SDK has nothing to resume from — that case is the app's responsibility (it already has the prompt and UI state to re-call `run()` itself).
+- **Downloads** are different — they continue natively via `NSURLSession` / `WorkManager` while the app is suspended. The SDK does not snapshot or re-fire them; the original `download()` callbacks remain registered and resume firing on return.
 
 ---
 

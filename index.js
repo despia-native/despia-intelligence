@@ -97,7 +97,8 @@
   }
 
   // Internal state.
-  var _jobs              = {}; // jobId -> { handler }
+  var _jobs              = {}; // jobId -> { handler, intent }
+  var _pending           = {}; // jobId -> { handler, intent }; populated by focusout, drained by focusin
   var _downloads         = {}; // modelId -> callbacks
   var _removes           = {}; // modelId -> { resolve, reject }
   var _removeAll         = null;
@@ -196,6 +197,26 @@
       _installedWaiters = [];
       waiters.forEach(function (resolve) { resolve(list); });
     };
+
+    // Lifecycle: native invokes window.focusout / window.focusin synchronously
+    // from applicationDidEnterBackground / applicationWillEnterForeground (iOS)
+    // and onPause / onResume (Android), while the JS thread is still alive.
+    // We snapshot active inference jobs on focusout, then re-fire them with
+    // fresh native sessions on focusin. Downloads keep running natively, so
+    // _downloads is intentionally NOT cleared.
+    window.focusout = function () {
+      Object.keys(_jobs).forEach(function (id) { _pending[id] = _jobs[id]; });
+      _jobs = {};
+    };
+
+    window.focusin = function () {
+      var toResume = _pending;
+      _pending = {};
+      Object.keys(toResume).forEach(function (id) {
+        var job = toResume[id];
+        if (job && job.intent) try { run(job.intent, job.handler); } catch (e) {}
+      });
+    };
   }
 
   function run(params, handler) {
@@ -204,13 +225,13 @@
     if (!_rt.ok) return _nr();
 
     var built = _build(params);
-    _jobs[built.id] = { handler: handler };
+    _jobs[built.id] = { handler: handler, intent: params };
     _fire(built.url);
 
     return {
       ok: true,
       intent: params,
-      cancel: function () { delete _jobs[built.id]; },
+      cancel: function () { delete _jobs[built.id]; delete _pending[built.id]; },
     };
   }
 
