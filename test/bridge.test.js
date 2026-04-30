@@ -39,13 +39,20 @@ function loadInDespiaBridgeContext(options) {
 
   const navigator = { userAgent: 'Mozilla/5.0 despia-test' };
   const module = { exports: {} };
+  const sandboxSetTimeout = function (fn, ms) {
+    if (options && options.instantModelTimeout && ms === 10000) {
+      fn();
+      return 1;
+    }
+    return setTimeout(fn, ms);
+  };
   const sandbox = {
     window,
     navigator,
     module,
     exports: module.exports,
     self: window,
-    setTimeout,
+    setTimeout: sandboxSetTimeout,
     clearTimeout,
     Date,
     crypto: (function () {
@@ -225,6 +232,15 @@ test('models.available returns empty array when runtime not ready', async () => 
   assert.deepEqual(list, []);
 });
 
+test('models.available resolves [] if native never replies', async () => {
+  const { intelligence, hrefLog } = loadInDespiaBridgeContext({ instantModelTimeout: true });
+  const list = await intelligence.models.available();
+  assert.equal(hrefLog.length, 1);
+  assert.match(hrefLog[0], /intelligence:\/\/models\?query=all/);
+  assert.equal(Array.isArray(list), true);
+  assert.equal(list.length, 0);
+});
+
 test('models.installed fires query=installed and resolves on onInstalledModelsLoaded', async () => {
   const { intelligence, hrefLog, window } = loadInDespiaBridgeContext({ simulateInstalled: true });
   const list = await intelligence.models.installed();
@@ -233,6 +249,15 @@ test('models.installed fires query=installed and resolves on onInstalledModelsLo
   assert.equal(list.length, 1);
   assert.equal(list[0].id, 'm1');
   assert.deepEqual(window.intelligence.installedModels, list);
+});
+
+test('models.installed resolves [] if native never replies', async () => {
+  const { intelligence, hrefLog } = loadInDespiaBridgeContext({ instantModelTimeout: true });
+  const list = await intelligence.models.installed();
+  assert.equal(hrefLog.length, 1);
+  assert.match(hrefLog[0], /intelligence:\/\/models\?query=installed/);
+  assert.equal(Array.isArray(list), true);
+  assert.equal(list.length, 0);
 });
 
 test('lifecycle: focusout snapshots active jobs and focusin re-fires them with same intent', () => {
@@ -268,6 +293,23 @@ test('lifecycle: focusout snapshots active jobs and focusin re-fires them with s
   assert.equal(completed, 'Hello world');
 });
 
+test('lifecycle: terminal callback after focusout clears pending job instead of resuming it', () => {
+  const { intelligence, hrefLog, window } = loadInDespiaBridgeContext();
+
+  let completed = null;
+  intelligence.run({ type: 'text', model: 'm', prompt: 'finish-in-bg' }, {
+    complete: (t) => { completed = t; },
+  });
+  assert.equal(hrefLog.length, 1);
+
+  window.focusout();
+  window.intelligence.onMLComplete('00000001-1111-4111-8111-111111111111', 'done while backgrounding');
+  assert.equal(completed, 'done while backgrounding');
+
+  window.focusin();
+  assert.equal(hrefLog.length, 1, 'completed pending job must not be re-fired');
+});
+
 test('lifecycle: cancelled job does not resume after focusin', () => {
   const { intelligence, hrefLog, window } = loadInDespiaBridgeContext();
 
@@ -281,6 +323,22 @@ test('lifecycle: cancelled job does not resume after focusin', () => {
 
   window.focusin();
   assert.equal(hrefLog.length, 1, 'cancelled job must not be re-fired');
+});
+
+test('lifecycle: original call handle cancels the resumed job after focusin', () => {
+  const { intelligence, hrefLog, window } = loadInDespiaBridgeContext();
+
+  let chunks = '';
+  const call = intelligence.run({ type: 'text', model: 'm', prompt: 'cancel-after-resume' }, {
+    stream: (c) => { chunks = c; },
+  });
+  window.focusout();
+  window.focusin();
+  assert.equal(hrefLog.length, 2);
+
+  call.cancel();
+  window.intelligence.onMLToken('00000002-1111-4111-8111-111111111111', 'should be ignored');
+  assert.equal(chunks, '');
 });
 
 test('lifecycle: many concurrent jobs all resume on focusin', () => {

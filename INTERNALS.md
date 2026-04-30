@@ -68,13 +68,13 @@ Inference sessions do not survive backgrounding — native tears the inference c
 
 **Mechanism.** Native invokes `window.focusout` / `window.focusin` synchronously from `applicationDidEnterBackground` / `applicationWillEnterForeground` (iOS) and `onPause` / `onResume` (Android), while the JS thread is still alive. We do not use `visibilitychange` — it competes with OS suspension and can be delayed or dropped on real devices.
 
-**On `focusout`:** every entry in `_jobs` is copied into `_pending`, then `_jobs` is cleared. Each entry already carries `{ handler, intent }` from the original `run()` call.
+**On `focusout`:** every entry in `_jobs` is copied into `_pending`, then `_jobs` is cleared. Each entry already carries `{ handler, intent, ref }` from the original `run()` call.
 
-**On `focusin`:** `_pending` is swapped to a local and cleared in a single step (so a `cancel()` landing during the resume loop cannot re-queue itself), then each saved entry is re-fired via `run(intent, handler)`. The new call gets a fresh native session and a new job id; the same handler receives the new tokens.
+**On `focusin`:** `_pending` is swapped to a local and cleared in a single step (so a `cancel()` landing during the resume loop cannot re-queue itself), then each saved entry is re-fired via `_start(intent, handler, ref)`. The new call gets a fresh native session and a new job id; the same handler receives the new tokens. The `ref` object is shared with the original call handle, so `call.cancel()` still cancels the resumed job after foreground.
 
 **Three things remove a job from `_pending`:**
 
-1. `onMLComplete` — already removed from `_jobs` before `focusout` would copy it.
+1. `onMLComplete` — deletes both `_jobs[id]` and `_pending[id]`. This also handles the edge case where native completes the old session after `focusout` but before `focusin`.
 2. `onMLError` — same.
 3. `call.cancel()` — explicitly clears both `_jobs[id]` and `_pending[id]`.
 
@@ -122,13 +122,14 @@ var TYPES = {
 
 | Variable | Type | Purpose |
 |---|---|---|
-| `_jobs` | `{}` | `jobId → { handler, intent }`. Active inference jobs. Deleted on complete, error, cancel. Cleared on `focusout` (entries copied to `_pending` first). |
-| `_pending` | `{}` | `jobId → { handler, intent }`. Jobs interrupted by app background. Populated on `focusout`, drained and re-fired on `focusin`. Also cleared by `cancel()`. |
+| `_jobs` | `{}` | `jobId → { handler, intent, ref }`. Active inference jobs. Deleted on complete, error, cancel. Cleared on `focusout` (entries copied to `_pending` first). |
+| `_pending` | `{}` | `jobId → { handler, intent, ref }`. Jobs interrupted by app background. Populated on `focusout`, drained and re-fired on `focusin`. Also cleared by `cancel()`. |
 | `_downloads` | `{}` | `modelId → session callbacks`. Active downloads. Deleted on `onDownloadEnd` / `onDownloadError`. **Not** cleared on `focusout` (downloads keep running natively). |
 | `_removes` | `{}` | `modelId → { resolve, reject }`. Pending remove promises. |
 | `_removeAll` | `null \| object` | Pending removeAll promise. One at a time. |
-| `_availableWaiters` | `[]` | Resolvers waiting for `onAvailableModelsLoaded`. Drained on each callback fire. |
-| `_installedWaiters` | `[]` | Resolvers waiting for `onInstalledModelsLoaded`. Drained on each callback fire. |
+| `_availableWaiters` | `[]` | Resolvers waiting for `onAvailableModelsLoaded`. Drained on callback fire, or individually removed on timeout. |
+| `_installedWaiters` | `[]` | Resolvers waiting for `onInstalledModelsLoaded`. Drained on callback fire, or individually removed on timeout. |
+| `_modelsTimeoutMs` | `number` | 10 second catalogue timeout. `available()` / `installed()` resolve `[]` if native never replies. |
 | `_ev` | `{}` | `event → fn[]`. Internal emitter for `downloadStart` / `downloadProgress` / `downloadEnd` / `downloadError`. |
 | `TYPES` | `{}` | Config. Single source of truth for type support. |
 
@@ -146,6 +147,7 @@ var TYPES = {
 - No `init()`, `setup()`, or `configure()`.
 - Do not add `visibilitychange` / `pagehide` / `beforeunload` listeners. Lifecycle is handled by native-injected `window.focusout` / `window.focusin`.
 - Do not collapse `_pending` back to a single slot — the map is load-bearing; concurrent jobs must all resume.
+- Keep the shared `ref` object on resumed jobs. It is what lets the original call handle cancel the latest resumed job id.
 - Do not clear `_downloads` on `focusout`. The download is still in progress natively and callbacks must keep routing if the app returns quickly.
 - Do not try to re-fire downloads on `focusin` the way inference jobs are re-fired. NSURLSession / WorkManager own the transfer; re-firing would start a duplicate.
 - Do not persist `_pending` to storage to cover the WebView-killed case. The consumer app already has the prompt and UI state to re-call `run()` on relaunch.
@@ -171,8 +173,8 @@ Run on a real Despia iOS and Android build that includes Local Intelligence befo
 
 **Models**
 
-- [ ] `await intelligence.models.available()` matches the native catalogue (ids, names, categories)
-- [ ] `await intelligence.models.installed()` resolves after `onInstalledModelsLoaded`; empty array is valid
+- [ ] `await intelligence.models.available()` matches the native catalogue (ids, names, categories); no native reply resolves `[]` after 10 seconds
+- [ ] `await intelligence.models.installed()` resolves after `onInstalledModelsLoaded`; empty array is valid; no native reply resolves `[]` after 10 seconds
 - [ ] Download: `onStart` / `onProgress` (0-100) / `onEnd` or `onError`
 - [ ] `remove` / `removeAll`: promise resolves; `installedModels` updates after a fresh `installed()`
 
@@ -269,9 +271,9 @@ window.despia =
 window.intelligence = window.intelligence || {}
 ```
 
-**Available models** — fire `intelligence://models?query=all`. Native delivers via `window.intelligence.onAvailableModelsLoaded(models)` (no variable write). The SDK mirrors the payload onto `window.intelligence.availableModels` for any consumer that prefers reading the snapshot.
+**Available models** — fire `intelligence://models?query=all`. Native delivers via `window.intelligence.onAvailableModelsLoaded(models)` (no variable write). The SDK mirrors the payload onto `window.intelligence.availableModels` for any consumer that prefers reading the snapshot. If native never replies, the SDK resolves `[]` after 10 seconds and removes that waiter.
 
-**Installed models** — fire `intelligence://models?query=installed`. Native both writes `window.intelligence.installedModels` and calls `window.intelligence.onInstalledModelsLoaded(models)`. The SDK resolves the promise on the callback and mirrors the payload onto `installedModels`.
+**Installed models** — fire `intelligence://models?query=installed`. Native both writes `window.intelligence.installedModels` and calls `window.intelligence.onInstalledModelsLoaded(models)`. The SDK resolves the promise on the callback and mirrors the payload onto `installedModels`. If native never replies, the SDK resolves `[]` after 10 seconds and removes that waiter.
 
 **Download** — `intelligence://download?model=<id>`. Native calls `onDownloadStart(modelId)` → `onDownloadProgress(modelId, fraction0to1)` → `onDownloadEnd(modelId)` (or `onDownloadError(modelId, errString)`). The SDK normalises progress to 0-100 before invoking the per-call `onProgress` callback. Downloads continue natively via NSURLSession (iOS) and WorkManager (Android).
 
@@ -317,13 +319,13 @@ window.intelligence = window.intelligence || {}
 | npm API | Raw bridge equivalent |
 |---|---|
 | `intelligence.run({ type: 'text', ... }, handler)` | Builds URL, fires `window.despia = url`, routes `onMLToken` / `onMLComplete` / `onMLError` by `jobId` to `handler` |
-| `intelligence.models.available()` | Fires `intelligence://models?query=all`, resolves on `onAvailableModelsLoaded` |
-| `intelligence.models.installed()` | Fires `intelligence://models?query=installed`, resolves on `onInstalledModelsLoaded` |
+| `intelligence.models.available()` | Fires `intelligence://models?query=all`, resolves on `onAvailableModelsLoaded`, or `[]` after 10 seconds |
+| `intelligence.models.installed()` | Fires `intelligence://models?query=installed`, resolves on `onInstalledModelsLoaded`, or `[]` after 10 seconds |
 | `intelligence.models.download(id, callbacks)` | Fires `intelligence://download?model=<id>`, fans `onDownload*` to `callbacks` and to `intelligence.on('download*')` |
 | `intelligence.models.remove(id)` | Fires `intelligence://remove?model=<id>`, resolves on `onRemoveSuccess` / rejects on `onRemoveError` |
 | `intelligence.models.removeAll()` | Fires `intelligence://remove?model=all`, resolves on `onRemoveAllSuccess` / rejects on `onRemoveAllError` |
 
-The package adds: stable `encodeURIComponent` query building (no `+` for spaces), UUID generation, per-job handler tables, `try`/`catch` around user handlers, and normalised download progress (0-100). Nothing else.
+The package adds: stable `encodeURIComponent` query building (no `+` for spaces), UUID generation, per-job handler tables, `try`/`catch` around user handlers, suspend/foreground inference resume via `window.focusout` / `window.focusin`, catalogue timeouts, and normalised download progress (0-100).
 
 ### Confirm with native before relying on edge behaviour
 

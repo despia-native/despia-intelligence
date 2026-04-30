@@ -96,6 +96,11 @@
     var off = _on(e, function () { fn.apply(null, arguments); off(); });
   }
 
+  function _removeItem(list, item) {
+    var i = list.indexOf(item);
+    if (i !== -1) list.splice(i, 1);
+  }
+
   // Internal state.
   var _jobs              = {}; // jobId -> { handler, intent }
   var _pending           = {}; // jobId -> { handler, intent }; populated by focusout, drained by focusin
@@ -104,6 +109,36 @@
   var _removeAll         = null;
   var _availableWaiters  = []; // resolvers for models.available()
   var _installedWaiters  = []; // resolvers for models.installed()
+  var _modelsTimeoutMs   = 10000;
+
+  function _start(params, handler, ref) {
+    var built = _build(params);
+    ref.id = built.id;
+    _jobs[built.id] = { handler: handler, intent: params, ref: ref };
+    _fire(built.url);
+  }
+
+  function _resolveModels(waiters, url) {
+    return new Promise(function (resolve) {
+      var done = false;
+      var timer = null;
+      var waiter = function (list) {
+        if (done) return;
+        done = true;
+        if (timer) clearTimeout(timer);
+        resolve(list);
+      };
+
+      waiters.push(waiter);
+      timer = setTimeout(function () {
+        if (done) return;
+        done = true;
+        _removeItem(waiters, waiter);
+        resolve([]);
+      }, _modelsTimeoutMs);
+      _fire(url);
+    });
+  }
 
   // Native -> JS: native calls these directly. Wired eagerly so unsolicited
   // pushes (e.g. catalogue at app start) are never dropped.
@@ -118,22 +153,24 @@
     };
 
     window.intelligence.onMLComplete = function (id, fullText) {
-      var job = _jobs[id];
+      var job = _jobs[id] || _pending[id];
       if (!job) return;
       if (job.handler && job.handler.complete) {
         try { job.handler.complete(fullText); } catch (e) {}
       }
       delete _jobs[id];
+      delete _pending[id];
     };
 
     window.intelligence.onMLError = function (err) {
       var jobId = err && err.jobId;
-      var job = _jobs[jobId];
+      var job = _jobs[jobId] || _pending[jobId];
       if (!job) return;
       if (job.handler && job.handler.error) {
         try { job.handler.error({ code: err.errorCode, message: err.errorMessage }); } catch (e) {}
       }
       delete _jobs[jobId];
+      delete _pending[jobId];
     };
 
     window.intelligence.onDownloadStart = function (modelId) {
@@ -214,7 +251,7 @@
       _pending = {};
       Object.keys(toResume).forEach(function (id) {
         var job = toResume[id];
-        if (job && job.intent) try { run(job.intent, job.handler); } catch (e) {}
+        if (job && job.intent && job.ref) try { _start(job.intent, job.handler, job.ref); } catch (e) {}
       });
     };
   }
@@ -224,32 +261,25 @@
     handler = handler || {};
     if (!_rt.ok) return _nr();
 
-    var built = _build(params);
-    _jobs[built.id] = { handler: handler, intent: params };
-    _fire(built.url);
+    var ref = { id: null };
+    _start(params, handler, ref);
 
     return {
       ok: true,
       intent: params,
-      cancel: function () { delete _jobs[built.id]; delete _pending[built.id]; },
+      cancel: function () { delete _jobs[ref.id]; delete _pending[ref.id]; },
     };
   }
 
   var models = {
     available: function () {
       if (!_rt.ok) return Promise.resolve([]);
-      return new Promise(function (resolve) {
-        _availableWaiters.push(resolve);
-        _fire('intelligence://models?query=all');
-      });
+      return _resolveModels(_availableWaiters, 'intelligence://models?query=all');
     },
 
     installed: function () {
       if (!_rt.ok) return Promise.resolve(_nr());
-      return new Promise(function (resolve) {
-        _installedWaiters.push(resolve);
-        _fire('intelligence://models?query=installed');
-      });
+      return _resolveModels(_installedWaiters, 'intelligence://models?query=installed');
     },
 
     download: function (modelId, callbacks) {
