@@ -66,7 +66,7 @@ declare const intelligence: {
   runtime: Runtime
   models: {
     available(): Promise<Model[]>
-    installed(): Promise<Model[] | NotReady>
+    installed(): Promise<Model[]>
     download(modelId: string, callbacks?: {
       onStart?:    () => void
       onProgress?: (percent: number) => void

@@ -14,7 +14,7 @@ function loadInDespiaBridgeContext(options) {
   const intelligence = {};
 
   const window = {
-    native_runtime: 'despia',
+    native_runtime: options && Object.prototype.hasOwnProperty.call(options, 'nativeRuntime') ? options.nativeRuntime : 'despia',
     intelligence,
   };
   Object.defineProperty(window, 'despia', {
@@ -119,6 +119,41 @@ test('Despia WebView context: run fires intelligence://text via window.despia', 
   assert.match(hrefLog[0], /prompt=Hello%20world/);
   assert.match(hrefLog[0], /model=m/);
   assert.match(hrefLog[0], /id=00000001-1111-4111-8111-111111111111/);
+});
+
+test('Despia WebView context: public calls re-wire callbacks after window.intelligence overwrite', () => {
+  const { intelligence, hrefLog, window } = loadInDespiaBridgeContext();
+  window.intelligence = {};
+
+  let final = null;
+  const call = intelligence.run({ type: 'text', model: 'm', prompt: 'rewire' }, {
+    complete: (t) => { final = t; },
+  });
+
+  assert.equal(call.ok, true);
+  assert.equal(hrefLog.length, 1);
+  assert.equal(typeof window.intelligence.onMLComplete, 'function');
+
+  window.intelligence.onMLComplete('00000001-1111-4111-8111-111111111111', 'done');
+  assert.equal(final, 'done');
+});
+
+test('Despia WebView context: runtime refreshes when native_runtime is injected late', () => {
+  const { intelligence, hrefLog, window } = loadInDespiaBridgeContext({ nativeRuntime: undefined });
+
+  assert.equal(intelligence.runtime.ok, false);
+  const early = intelligence.run({ type: 'text', model: 'm', prompt: 'too soon' }, {});
+  assert.equal(early.ok, false);
+  assert.equal(hrefLog.length, 0);
+
+  window.native_runtime = 'despia';
+  const ready = intelligence.run({ type: 'text', model: 'm', prompt: 'now ready' }, {});
+
+  assert.equal(ready.ok, true);
+  assert.equal(intelligence.runtime.ok, true);
+  assert.equal(intelligence.runtime.status, 'ready');
+  assert.equal(hrefLog.length, 1);
+  assert.match(hrefLog[0], /prompt=now%20ready/);
 });
 
 test('streaming callbacks route token / complete / error to handler', () => {
@@ -254,6 +289,17 @@ test('models.available fires query=all and resolves on onAvailableModelsLoaded',
   assert.deepEqual(window.intelligence.availableModels, list);
 });
 
+test('models.available returns cached native list without a new native request', async () => {
+  const { intelligence, hrefLog, window } = loadInDespiaBridgeContext();
+  window.intelligence.availableModels = [{ id: 'cached-a', name: 'Cached A' }];
+
+  const list = await intelligence.models.available();
+
+  assert.equal(hrefLog.length, 0);
+  assert.equal(list.length, 1);
+  assert.equal(list[0].id, 'cached-a');
+});
+
 test('models.available returns empty array when runtime not ready', async () => {
   delete global.window;
   delete global.navigator;
@@ -279,6 +325,17 @@ test('models.installed fires query=installed and resolves on onInstalledModelsLo
   assert.equal(list.length, 1);
   assert.equal(list[0].id, 'm1');
   assert.deepEqual(window.intelligence.installedModels, list);
+});
+
+test('models.installed returns cached native list without a new native request', async () => {
+  const { intelligence, hrefLog, window } = loadInDespiaBridgeContext();
+  window.intelligence.installedModels = [{ id: 'cached-m', name: 'Cached M' }];
+
+  const list = await intelligence.models.installed();
+
+  assert.equal(hrefLog.length, 0);
+  assert.equal(list.length, 1);
+  assert.equal(list[0].id, 'cached-m');
 });
 
 test('models.installed resolves [] if native never replies', async () => {
@@ -384,4 +441,24 @@ test('lifecycle: original call handle cancels the resumed job after focusin', ()
   call.cancel();
   window.intelligence.onMLToken('00000002-1111-4111-8111-111111111111', 'should be ignored');
   assert.equal(chunks, '');
+});
+
+test('lifecycle: resume re-wires callbacks before firing native URL', () => {
+  const { intelligence, hrefLog, window } = loadInDespiaBridgeContext();
+
+  let chunks = '';
+  intelligence.run({ type: 'text', model: 'm', prompt: 'rewire-on-resume' }, {
+    stream: (c) => { chunks = c; },
+  });
+
+  window.focusout();
+  window.intelligence = {};
+  window.focusin();
+
+  assert.equal(hrefLog.length, 2);
+  assert.match(hrefLog[1], /prompt=rewire-on-resume/);
+  assert.equal(typeof window.intelligence.onMLToken, 'function');
+
+  window.intelligence.onMLToken('00000002-1111-4111-8111-111111111111', 'resumed');
+  assert.equal(chunks, 'resumed');
 });

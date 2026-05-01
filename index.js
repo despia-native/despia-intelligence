@@ -20,6 +20,7 @@
   function _fire(url) {
     if (typeof window === 'undefined' || url == null) return;
     try {
+      _wireCallbacks();
       window.despia = url;
     } catch (e) {
       if (typeof console !== 'undefined' && console.error) {
@@ -66,14 +67,26 @@
     return { url: 'intelligence://' + cfg.route + '?' + parts.join('&'), id: id };
   }
 
-  // Runtime: ready iff window.native_runtime === 'despia'.
-  var _rt = (function () {
+  // Runtime: ready iff window.native_runtime === 'despia'. Keep the exported
+  // object stable, but refresh its fields before public calls so apps that load
+  // the SDK before native injection still recover once the flag appears.
+  function _computeRuntime() {
     if (typeof window === 'undefined') return { ok: false, status: 'unavailable', message: null };
     if (window.native_runtime === 'despia') return { ok: true, status: 'ready', message: null };
     var ua = (typeof navigator !== 'undefined' && navigator.userAgent || '').toLowerCase();
     if (ua.indexOf('despia') !== -1) return { ok: false, status: 'outdated', message: 'Your Despia app is outdated. Install the latest version to use Local Intelligence.' };
     return { ok: false, status: 'unavailable', message: null };
-  }());
+  }
+
+  var _rt = _computeRuntime();
+
+  function _refreshRuntime() {
+    var next = _computeRuntime();
+    _rt.ok = next.ok;
+    _rt.status = next.status;
+    _rt.message = next.message;
+    return _rt;
+  }
 
   function _nr() {
     return { ok: false, status: _rt.status, message: _rt.message, intent: null, cancel: function () {} };
@@ -152,9 +165,11 @@
     });
   }
 
-  // Native -> JS: native calls these directly. Wired eagerly so unsolicited
-  // pushes (e.g. catalogue at app start) are never dropped.
-  if (typeof window !== 'undefined' && _rt.ok) {
+  // Native -> JS: native calls these directly. Wire eagerly and re-wire before
+  // every public API call so React apps / generated code that overwrite
+  // window.intelligence do not leave callbacks missing.
+  function _wireCallbacks() {
+    if (typeof window === 'undefined') return;
     if (!window.intelligence) window.intelligence = {};
 
     window.intelligence.onMLToken = function (id, chunk) {
@@ -268,10 +283,23 @@
     };
   }
 
+  _wireCallbacks();
+
+  function _prepareBridge() {
+    _wireCallbacks();
+    return _refreshRuntime();
+  }
+
+  function _cachedModels(prop) {
+    if (typeof window === 'undefined' || !window.intelligence) return null;
+    var list = window.intelligence[prop];
+    return Array.isArray(list) ? list : null;
+  }
+
   function run(params, handler) {
     params  = params  || {};
     handler = handler || {};
-    if (!_rt.ok) return _nr();
+    if (!_prepareBridge().ok) return _nr();
     if (_hasActiveInference()) return _busy(handler);
 
     var ref = { id: null };
@@ -286,23 +314,27 @@
 
   var models = {
     available: function () {
-      if (!_rt.ok) return Promise.resolve([]);
+      if (!_prepareBridge().ok) return Promise.resolve([]);
+      var cached = _cachedModels('availableModels');
+      if (cached) return Promise.resolve(cached);
       return _resolveModels(_availableWaiters, 'intelligence://models?query=all');
     },
 
     installed: function () {
-      if (!_rt.ok) return Promise.resolve(_nr());
+      if (!_prepareBridge().ok) return Promise.resolve([]);
+      var cached = _cachedModels('installedModels');
+      if (cached) return Promise.resolve(cached);
       return _resolveModels(_installedWaiters, 'intelligence://models?query=installed');
     },
 
     download: function (modelId, callbacks) {
-      if (!_rt.ok) return _nr();
+      if (!_prepareBridge().ok) return _nr();
       _downloads[modelId] = callbacks || {};
       _fire('intelligence://download?model=' + encodeURIComponent(modelId));
     },
 
     remove: function (modelId) {
-      if (!_rt.ok) return Promise.resolve(_nr());
+      if (!_prepareBridge().ok) return Promise.resolve(_nr());
       return new Promise(function (resolve, reject) {
         _removes[modelId] = { resolve: resolve, reject: reject };
         _fire('intelligence://remove?model=' + encodeURIComponent(modelId));
@@ -310,7 +342,7 @@
     },
 
     removeAll: function () {
-      if (!_rt.ok) return Promise.resolve(_nr());
+      if (!_prepareBridge().ok) return Promise.resolve(_nr());
       return new Promise(function (resolve, reject) {
         _removeAll = { resolve: resolve, reject: reject };
         _fire('intelligence://remove?model=all');
