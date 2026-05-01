@@ -23,12 +23,13 @@ Internal documentation for maintainers and native integrators. Not published on 
 
 ### What this package is
 
-A thin wrapper around the Despia Local Intelligence WebView bridge. It does four things and nothing else:
+A thin wrapper around the Despia Local Intelligence WebView bridge. It does five things and nothing else:
 
 1. Serialises params to an `intelligence://` URL and assigns it to **`window.despia`** in `_fire`. One assignment per call. No queue, no `iframe`, no `location.href`.
 2. Generates and manages job IDs invisibly.
 3. Wires native callbacks on **`window.intelligence.*`** at module load and routes them to per-call handlers / event listeners.
-4. Auto-resumes every interrupted inference job on app return via `window.focusout` / `window.focusin` for the soft-close case (process alive, JS memory intact).
+4. Enforces one active inference job at a time. Concurrent local generations are rejected before any native URL fires.
+5. Auto-resumes the interrupted inference job on app return via `window.focusout` / `window.focusin` for the soft-close case (process alive, JS memory intact).
 
 It does not restrict what the native runtime can do. Adding a new scheme route requires zero changes to any function — only the `TYPES` config at the top of `index.js`.
 
@@ -64,13 +65,15 @@ Resolved once at import time. There is no `intelligence_available` flag.
 
 ### App lifecycle (soft-close suspend / resume)
 
-"Soft close" means the user swipes home, switches apps, and later returns while the WebView process is still alive. JS memory survives, but the native inference session may be torn down before the OS suspends the WebView. The SDK auto-resumes inference jobs for that case.
+"Soft close" means the user swipes home, switches apps, and later returns while the WebView process is still alive. JS memory survives, but the native inference session may be torn down before the OS suspends the WebView. The SDK auto-resumes the single active inference job for that case.
 
 **Mechanism.** Native invokes `window.focusout` / `window.focusin` synchronously from `applicationDidEnterBackground` / `applicationWillEnterForeground` (iOS) and `onPause` / `onResume` (Android), while the JS thread is still alive. We do not use `visibilitychange` — it competes with OS suspension and can be delayed or dropped on real devices.
 
-**On `focusout`:** every entry in `_jobs` is copied into `_pending`, then `_jobs` is cleared. Each entry already carries `{ handler, intent, ref }` from the original `run()` call.
+**On `focusout`:** the active `_jobs` entry is copied into `_pending`, then `_jobs` is cleared. The entry already carries `{ handler, intent, ref }` from the original `run()` call.
 
 **On `focusin`:** `_pending` is swapped to a local and cleared in a single step (so a `cancel()` landing during the resume loop cannot re-queue itself), then each saved entry is re-fired via `_start(intent, handler, ref)`. The new call gets a fresh native session and a new job id; the same handler receives the new tokens. The `ref` object is shared with the original call handle, so `call.cancel()` still cancels the resumed job after foreground.
+
+**Single-job guard.** `run()` checks `_hasActiveInference()` before building or firing a URL. If `_jobs` or `_pending` already has an entry, `run()` returns `{ ok: false, status: 'busy', message, intent: null, cancel() {} }` and calls `handler.error({ code: 409, message })` if provided. This prevents apps from starting multiple local generations that can overload the device. Resume uses `_start()` directly so the pending job can restart on `focusin` without tripping the public guard.
 
 **Three things remove a job from `_pending`:**
 
@@ -122,8 +125,8 @@ var TYPES = {
 
 | Variable | Type | Purpose |
 |---|---|---|
-| `_jobs` | `{}` | `jobId → { handler, intent, ref }`. Active inference jobs. Deleted on complete, error, cancel. Cleared on `focusout` (entries copied to `_pending` first). |
-| `_pending` | `{}` | `jobId → { handler, intent, ref }`. Jobs interrupted by app background. Populated on `focusout`, drained and re-fired on `focusin`. Also cleared by `cancel()`. |
+| `_jobs` | `{}` | Active inference job: `jobId → { handler, intent, ref }`. At most one entry. Deleted on complete, error, cancel. Cleared on `focusout` (copied to `_pending` first). |
+| `_pending` | `{}` | Pending resume job: `jobId → { handler, intent, ref }`. At most one entry. Populated on `focusout`, drained and re-fired on `focusin`. Also cleared by `cancel()`. |
 | `_downloads` | `{}` | `modelId → session callbacks`. Active downloads. Deleted on `onDownloadEnd` / `onDownloadError`. **Not** cleared on `focusout` (downloads keep running natively). |
 | `_removes` | `{}` | `modelId → { resolve, reject }`. Pending remove promises. |
 | `_removeAll` | `null \| object` | Pending removeAll promise. One at a time. |
@@ -145,8 +148,9 @@ var TYPES = {
 - No `console.log` in normal paths. The only allowed log is `console.error('[despia-intelligence] Despia command failed:', e)` when the `window.despia` assignment throws.
 - No retry logic — the native layer handles retries.
 - No `init()`, `setup()`, or `configure()`.
+- Do not allow concurrent inference jobs. `run()` must reject with `status: 'busy'` while `_jobs` or `_pending` is non-empty. Concurrent local generations can overload the device.
 - Do not add `visibilitychange` / `pagehide` / `beforeunload` listeners. Lifecycle is handled by native-injected `window.focusout` / `window.focusin`.
-- Do not collapse `_pending` back to a single slot — the map is load-bearing; concurrent jobs must all resume.
+- Keep `_jobs` / `_pending` keyed by job id even though only one entry is allowed. Native callbacks are id-based and the map shape keeps cleanup explicit.
 - Keep the shared `ref` object on resumed jobs. It is what lets the original call handle cancel the latest resumed job id.
 - Do not clear `_downloads` on `focusout`. The download is still in progress natively and callbacks must keep routing if the app returns quickly.
 - Do not try to re-fire downloads on `focusin` the way inference jobs are re-fired. NSURLSession / WorkManager own the transfer; re-firing would start a duplicate.
@@ -169,7 +173,7 @@ Run on a real Despia iOS and Android build that includes Local Intelligence befo
 
 - [ ] Single job: tokens stream; `stream` handler receives the **full accumulated text** each time (replace, not append in UI)
 - [ ] `complete` fires once with final string; `error` payload is `{ code, message }`
-- [ ] Two concurrent jobs with different prompts: each handler only receives its own job’s events (routing by `jobId`)
+- [ ] Second `run()` while one job is active: no native URL fires; return is `status: 'busy'`; handler receives error code `409`
 
 **Models**
 
@@ -181,7 +185,7 @@ Run on a real Despia iOS and Android build that includes Local Intelligence befo
 **Lifecycle**
 
 - [ ] Home button mid-generation: on return, interrupted jobs **resume** without app code re-calling `run` for those intents
-- [ ] Multiple concurrent jobs: all resume after a single suspend/foreground cycle
+- [ ] Starting a new job while one is pending resume returns `status: 'busy'`
 - [ ] `call.cancel()` called while in BG: that job does not resume on return
 
 **Release hygiene**
@@ -255,7 +259,7 @@ window.despia =
 
 - `onMLToken(id, chunk)` — `chunk` is the **full accumulated text so far**, not a delta. Replace UI; do not append.
 - `onMLComplete(id, fullText)` — once when inference finishes. `fullText` matches the final `chunk`.
-- `onMLError({ jobId, errorCode, errorMessage })` — `jobId` is present so callers can route errors when multiple jobs run.
+- `onMLError({ jobId, errorCode, errorMessage })` — `jobId` is present so the SDK can route the error to the active job handler.
 
 **Error codes (text route)**
 
@@ -325,7 +329,7 @@ window.intelligence = window.intelligence || {}
 | `intelligence.models.remove(id)` | Fires `intelligence://remove?model=<id>`, resolves on `onRemoveSuccess` / rejects on `onRemoveError` |
 | `intelligence.models.removeAll()` | Fires `intelligence://remove?model=all`, resolves on `onRemoveAllSuccess` / rejects on `onRemoveAllError` |
 
-The package adds: stable `encodeURIComponent` query building (no `+` for spaces), UUID generation, per-job handler tables, `try`/`catch` around user handlers, suspend/foreground inference resume via `window.focusout` / `window.focusin`, catalogue timeouts, and normalised download progress (0-100).
+The package adds: stable `encodeURIComponent` query building (no `+` for spaces), UUID generation, single-job routing and busy rejection, `try`/`catch` around user handlers, suspend/foreground inference resume via `window.focusout` / `window.focusin`, catalogue timeouts, and normalised download progress (0-100).
 
 ### Confirm with native before relying on edge behaviour
 

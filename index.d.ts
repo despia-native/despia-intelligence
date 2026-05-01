@@ -1,6 +1,7 @@
 // Types for the default export of despia-intelligence (Local Intelligence WebView bridge).
 
 export type RuntimeStatus = 'ready' | 'outdated' | 'unavailable'
+export type RunStatus = RuntimeStatus | 'busy'
 
 export type Runtime =
   | { ok: true;  status: 'ready';                         message: null          }
@@ -8,6 +9,14 @@ export type Runtime =
 
 /** Not-ready branch matches CallHandle shape so `if (!call.ok)` / `call.cancel()` work the same. */
 export type NotReady = Extract<Runtime, { ok: false }> & {
+  intent:   null
+  cancel(): void
+}
+
+export type RunRejected = {
+  ok:       false
+  status:   Exclude<RunStatus, 'ready'>
+  message:  string | null
   intent:   null
   cancel(): void
 }
@@ -53,7 +62,7 @@ type DownloadEvents = {
 }
 
 declare const intelligence: {
-  run(params: Params, handler?: Handler): CallHandle | NotReady
+  run(params: Params, handler?: Handler): CallHandle | RunRejected
   runtime: Runtime
   models: {
     available(): Promise<Model[]>

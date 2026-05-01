@@ -79,6 +79,14 @@
     return { ok: false, status: _rt.status, message: _rt.message, intent: null, cancel: function () {} };
   }
 
+  function _busy(handler) {
+    var err = { code: 409, message: 'Another inference job is already running. Wait for it to finish or cancel it before starting a new one.' };
+    if (handler && handler.error) {
+      try { handler.error(err); } catch (e) {}
+    }
+    return { ok: false, status: 'busy', message: err.message, intent: null, cancel: function () {} };
+  }
+
   // Event fanout (download lifecycle).
   var _ev = {};
   function _emit(e) {
@@ -101,9 +109,13 @@
     if (i !== -1) list.splice(i, 1);
   }
 
+  function _hasActiveInference() {
+    return Object.keys(_jobs).length > 0 || Object.keys(_pending).length > 0;
+  }
+
   // Internal state.
-  var _jobs              = {}; // jobId -> { handler, intent }
-  var _pending           = {}; // jobId -> { handler, intent }; populated by focusout, drained by focusin
+  var _jobs              = {}; // active inference job: jobId -> { handler, intent }
+  var _pending           = {}; // pending resume job: jobId -> { handler, intent }; populated by focusout, drained by focusin
   var _downloads         = {}; // modelId -> callbacks
   var _removes           = {}; // modelId -> { resolve, reject }
   var _removeAll         = null;
@@ -260,6 +272,7 @@
     params  = params  || {};
     handler = handler || {};
     if (!_rt.ok) return _nr();
+    if (_hasActiveInference()) return _busy(handler);
 
     var ref = { id: null };
     _start(params, handler, ref);

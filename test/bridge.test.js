@@ -154,6 +154,36 @@ test('streaming callbacks route token / complete / error to handler', () => {
   assert.equal(err2.message, 'invalid model id');
 });
 
+test('Despia WebView context: second concurrent run is rejected before native fire', () => {
+  const { intelligence, hrefLog } = loadInDespiaBridgeContext();
+
+  intelligence.run({ type: 'text', model: 'm', prompt: 'first' }, {});
+
+  let rejected = null;
+  const second = intelligence.run({ type: 'text', model: 'm', prompt: 'second' }, {
+    error: (e) => { rejected = e; },
+  });
+
+  assert.equal(hrefLog.length, 1);
+  assert.match(hrefLog[0], /prompt=first/);
+  assert.equal(second.ok, false);
+  assert.equal(second.status, 'busy');
+  assert.equal(rejected.code, 409);
+  assert.match(rejected.message, /already running/);
+});
+
+test('Despia WebView context: new run is allowed after complete', () => {
+  const { intelligence, hrefLog, window } = loadInDespiaBridgeContext();
+
+  intelligence.run({ type: 'text', model: 'm', prompt: 'first' }, {});
+  window.intelligence.onMLComplete('00000001-1111-4111-8111-111111111111', 'done');
+  const second = intelligence.run({ type: 'text', model: 'm', prompt: 'second' }, {});
+
+  assert.equal(second.ok, true);
+  assert.equal(hrefLog.length, 2);
+  assert.match(hrefLog[1], /prompt=second/);
+});
+
 test('Despia WebView context: unknown type throws', () => {
   const { intelligence } = loadInDespiaBridgeContext();
   assert.throws(() => intelligence.run({ type: 'not-a-real-type', prompt: 'x' }, {}), /Unknown type/);
@@ -325,6 +355,21 @@ test('lifecycle: cancelled job does not resume after focusin', () => {
   assert.equal(hrefLog.length, 1, 'cancelled job must not be re-fired');
 });
 
+test('lifecycle: new run is rejected while previous job is pending resume', () => {
+  const { intelligence, hrefLog, window } = loadInDespiaBridgeContext();
+
+  intelligence.run({ type: 'text', model: 'm', prompt: 'first' }, {});
+  window.focusout();
+
+  const second = intelligence.run({ type: 'text', model: 'm', prompt: 'second' }, {});
+  assert.equal(second.ok, false);
+  assert.equal(second.status, 'busy');
+
+  window.focusin();
+  assert.equal(hrefLog.length, 2);
+  assert.match(hrefLog[1], /prompt=first/);
+});
+
 test('lifecycle: original call handle cancels the resumed job after focusin', () => {
   const { intelligence, hrefLog, window } = loadInDespiaBridgeContext();
 
@@ -339,20 +384,4 @@ test('lifecycle: original call handle cancels the resumed job after focusin', ()
   call.cancel();
   window.intelligence.onMLToken('00000002-1111-4111-8111-111111111111', 'should be ignored');
   assert.equal(chunks, '');
-});
-
-test('lifecycle: many concurrent jobs all resume on focusin', () => {
-  const { intelligence, hrefLog, window } = loadInDespiaBridgeContext();
-  const prompts = ['intro', 'history', 'handshake'];
-  prompts.forEach((p) => intelligence.run({ type: 'text', model: 'm', prompt: p }, {}));
-  assert.equal(hrefLog.length, 3);
-
-  window.focusout();
-  window.focusin();
-
-  assert.equal(hrefLog.length, 6);
-  prompts.forEach((p) => {
-    const found = hrefLog.slice(3).some((u) => u.indexOf('prompt=' + p) !== -1);
-    assert.ok(found, 'expected resumed URL for prompt=' + p);
-  });
 });
