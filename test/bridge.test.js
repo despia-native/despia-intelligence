@@ -26,12 +26,12 @@ function loadInDespiaBridgeContext(options) {
       window._despiaUrl = u;
       if (options && options.simulateAvailable && String(u).indexOf('query=all') !== -1) {
         setTimeout(function () {
-          window.intelligence.onAvailableModelsLoaded([{ id: 'a', name: 'A', category: 'text' }]);
+          window.intelligence.onAvailableModelsLoaded([{ id: 'a', name: 'A' }]);
         }, 10);
       }
       if (options && options.simulateInstalled && String(u).indexOf('query=installed') !== -1) {
         setTimeout(function () {
-          window.intelligence.onInstalledModelsLoaded([{ id: 'm1', name: 'M1', category: 'text' }]);
+          window.intelligence.onInstalledModelsLoaded([{ id: 'm1', name: 'M1' }]);
         }, 10);
       }
     },

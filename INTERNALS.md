@@ -28,7 +28,7 @@ A thin wrapper around the Despia Local Intelligence WebView bridge. It does four
 1. Serialises params to an `intelligence://` URL and assigns it to **`window.despia`** in `_fire`. One assignment per call. No queue, no `iframe`, no `location.href`.
 2. Generates and manages job IDs invisibly.
 3. Wires native callbacks on **`window.intelligence.*`** at module load and routes them to per-call handlers / event listeners.
-4. Auto-resumes every interrupted inference job on app return via `window.focusout` / `window.focusin` (suspend case; JS context alive).
+4. Auto-resumes every interrupted inference job on app return via `window.focusout` / `window.focusin` for the soft-close case (process alive, JS memory intact).
 
 It does not restrict what the native runtime can do. Adding a new scheme route requires zero changes to any function — only the `TYPES` config at the top of `index.js`.
 
@@ -62,9 +62,9 @@ Resolved once at import time. There is no `intelligence_available` flag.
 
 ---
 
-### App lifecycle (suspend / resume)
+### App lifecycle (soft-close suspend / resume)
 
-Inference sessions do not survive backgrounding — native tears the inference context down before the OS suspends the WebView. The SDK auto-resumes them on return.
+"Soft close" means the user swipes home, switches apps, and later returns while the WebView process is still alive. JS memory survives, but the native inference session may be torn down before the OS suspends the WebView. The SDK auto-resumes inference jobs for that case.
 
 **Mechanism.** Native invokes `window.focusout` / `window.focusin` synchronously from `applicationDidEnterBackground` / `applicationWillEnterForeground` (iOS) and `onPause` / `onResume` (Android), while the JS thread is still alive. We do not use `visibilitychange` — it competes with OS suspension and can be delayed or dropped on real devices.
 
@@ -78,7 +78,7 @@ Inference sessions do not survive backgrounding — native tears the inference c
 2. `onMLError` — same.
 3. `call.cancel()` — explicitly clears both `_jobs[id]` and `_pending[id]`.
 
-**Scope.** This covers the suspend case only (process alive, JS paused). If the OS fully kills the WebView process, JS memory is gone and the SDK has nothing to resume from on relaunch — that case is the consumer app's responsibility. We do not persist `_pending` to storage.
+**Scope.** This covers soft-close suspend/foreground only (process alive, JS paused). If the OS fully kills the WebView process, JS memory is gone and the SDK has nothing to resume from on relaunch — that case is the consumer app's responsibility. We do not persist `_pending` to storage.
 
 **Downloads are different.** They continue natively via `NSURLSession` / `WorkManager`, so we do not snapshot `_downloads` and we do not re-fire downloads on `focusin`. Re-firing would start a duplicate download. The original session callbacks remain registered and resume firing on return; `onProgress` is not replayed for time spent backgrounded (no source of truth for the percentage between the last real tick and the next one).
 

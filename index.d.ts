@@ -12,18 +12,10 @@ export type NotReady = Extract<Runtime, { ok: false }> & {
   cancel(): void
 }
 
-export type ModelCategory =
-  | 'text'
-  | 'asr'
-  | 'vision'
-  | 'embedding'
-  | 'vad'
-  | 'speaker'
-
 export type Model = {
-  id:       string
-  name:     string
-  category: ModelCategory | string
+  id:    string
+  name?: string
+  [key: string]: unknown
 }
 
 /** Serialised to intelligence:// query; extend `type` when TYPES in index.js adds routes. */

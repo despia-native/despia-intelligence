@@ -1,35 +1,23 @@
 # Despia Intelligence
 
-On-device LLM inference for Despia Native apps. Use the JavaScript you already ship in your hybrid app, while Despia runs the model natively on iOS and Android.
+JavaScript SDK for Local AI in Despia Native apps. Keep your UI in React, Vue, Svelte, or plain JavaScript while Despia runs inference, model storage, downloads, and hardware acceleration natively on iOS and Android.
 
 [![npm](https://img.shields.io/npm/v/despia-intelligence)](https://www.npmjs.com/package/despia-intelligence)
 [![license](https://img.shields.io/npm/l/despia-intelligence)](LICENSE)
 [![source](https://img.shields.io/badge/source-GitHub-181717?logo=github)](https://github.com/despia-native/despia-intelligence)
 
-## What You Get
+## Highlights
 
-- Private, on-device inference. Prompts and generated text stay on the device.
-- Streaming text generation with one JavaScript call.
-- Installable local models with progress events.
-- Works offline after the model is downloaded.
-- Auto-resume for in-flight inference when the app is suspended and reopened while the JS context is still alive.
-- No API keys, backend proxy, per-token billing, init step, or build step.
+- **Private by default**: prompts and generated text stay on the device.
+- **No backend required**: no API keys, proxy server, CORS setup, or token billing.
+- **Offline after download**: installed models keep working without network.
+- **Streaming responses**: render output as it is generated.
+- **Native model downloads**: progress events in JavaScript, download work handled by iOS/Android.
+- **Soft-close resume**: if the user leaves the app and returns while the WebView is still alive, active inference jobs restart automatically.
 
-This package currently enables **text inference** (`type: 'text'`). Other route names are reserved internally until the native runtime ships them.
+Current public support is **text inference** through `type: 'text'`.
 
-## Requirements
-
-Your app must run inside the Despia Native Runtime. The native runtime must set:
-
-```js
-window.native_runtime === 'despia'
-```
-
-The SDK reads this once when it is imported. In Despia apps, load/import this package after the runtime flag exists.
-
-Outside Despia, `intelligence.runtime.ok` is `false`. You should show a fallback UI or use a cloud model in that case.
-
-## Install
+## Installation
 
 ```bash
 npm install despia-intelligence
@@ -39,14 +27,32 @@ npm install despia-intelligence
 import intelligence from 'despia-intelligence';
 ```
 
-For a script tag demo, load `index.js` directly:
+## Runtime Check
 
-```html
-<script src="./index.js"></script>
-<script>
-  const intelligence = window.intelligence;
-</script>
+Always gate Local AI with `intelligence.runtime.ok`.
+
+```js
+if (!intelligence.runtime.ok) {
+  showLocalAiUnavailable(intelligence.runtime.message);
+  return;
+}
 ```
+
+Runtime status:
+
+```js
+intelligence.runtime.ok       // boolean
+intelligence.runtime.status   // 'ready' | 'outdated' | 'unavailable'
+intelligence.runtime.message  // string | null
+```
+
+| Status | Meaning |
+| --- | --- |
+| `ready` | Local AI is available in the current Despia runtime. |
+| `outdated` | The app should be updated before Local AI can be used. |
+| `unavailable` | The code is not running in a Local AI-capable Despia runtime. |
+
+Outside Despia, the package is safe to import. `runtime.ok` will be `false`, so you can render a normal web fallback or call your cloud model.
 
 ## Quick Start
 
@@ -54,7 +60,7 @@ For a script tag demo, load `index.js` directly:
 import intelligence from 'despia-intelligence';
 
 if (!intelligence.runtime.ok) {
-  showLocalAiUnavailable(intelligence.runtime.message);
+  renderWithoutLocalAi();
   return;
 }
 
@@ -66,7 +72,8 @@ intelligence.run({
   stream: true,
 }, {
   stream: (chunk) => {
-    // chunk is the full accumulated text so far. Replace UI, do not append.
+    // chunk is the full accumulated answer so far.
+    // Replace UI content; do not append chunks together.
     output.textContent = chunk;
   },
   complete: (text) => {
@@ -80,10 +87,12 @@ intelligence.run({
 
 ## Recommended Model Flow
 
-Use installed models for inference. If no model is installed, load the catalogue and let the user download one.
+Models are device-local. Before inference, check what is installed on the current device. If nothing is installed, load the available catalogue and download a model.
+
+The SDK only requires a model `id`. Other model fields are native-provided metadata and should be treated as optional.
 
 ```js
-async function ensureTextModel() {
+async function getModelForInference() {
   if (!intelligence.runtime.ok) return null;
 
   const installed = await intelligence.models.installed();
@@ -92,11 +101,12 @@ async function ensureTextModel() {
   }
 
   const available = await intelligence.models.available();
-  const model = available.find((m) => m.category === 'text') || available[0];
+  const model = available[0];
   if (!model) return null;
 
   await new Promise((resolve, reject) => {
     intelligence.models.download(model.id, {
+      onStart: () => showDownloadUI(model),
       onProgress: (percent) => updateDownloadProgress(percent),
       onEnd: resolve,
       onError: reject,
@@ -105,31 +115,25 @@ async function ensureTextModel() {
 
   return model.id;
 }
+
+const model = await getModelForInference();
+
+if (model) {
+  intelligence.run({
+    type: 'text',
+    model,
+    prompt: 'Summarize this note.',
+  }, handler);
+}
 ```
 
-If native returns `error.code === 7` or an "invalid/unknown model id" message, the selected model is not installed or the native catalogue is stale. Refresh `models.installed()` and pick an installed model before calling `run()`.
+If inference reports an invalid or unknown model id, refresh `models.installed()` and choose a model from that installed list before calling `run()` again.
 
-## Runtime Status
-
-```js
-intelligence.runtime.ok       // boolean
-intelligence.runtime.status   // 'ready' | 'outdated' | 'unavailable'
-intelligence.runtime.message  // string | null
-```
-
-| Status | Meaning |
-| --- | --- |
-| `ready` | `window.native_runtime === 'despia'`; Local AI can be used. |
-| `outdated` | The user agent looks like Despia, but the runtime flag is missing. Ask the user to update the app. |
-| `unavailable` | Not running inside Despia. Use a fallback path. |
-
-Runtime readiness is intentionally strict. The SDK does not check `window.despia` for readiness; it only uses `window.native_runtime === 'despia'`.
-
-## API
+## Text Inference
 
 ### `intelligence.run(params, handler?)`
 
-Starts one inference job.
+Starts one native inference job.
 
 ```ts
 type Params = {
@@ -148,54 +152,85 @@ type Handler = {
 }
 ```
 
-Returns:
+Returns a handle:
 
 ```ts
-{ ok: true, intent: Params, cancel(): void }
+{
+  ok: true
+  intent: Params
+  cancel(): void
+}
 ```
 
 When the runtime is not ready, it returns:
 
 ```ts
-{ ok: false, status: 'outdated' | 'unavailable', message: string | null, intent: null, cancel(): void }
+{
+  ok: false
+  status: 'outdated' | 'unavailable'
+  message: string | null
+  intent: null
+  cancel(): void
+}
 ```
 
-`cancel()` removes the job from the SDK routing table. It does not ask native to stop inference; it only prevents more callbacks from reaching your handler.
+Handler behavior:
+
+- `stream(chunk)` receives the full accumulated response so far.
+- `complete(text)` fires once with the final response.
+- `error(err)` receives a compact `{ code, message }` object.
+- `cancel()` removes the job from SDK routing so future callbacks no longer reach your handler. It does not cancel native inference.
+
+## Models
 
 ### `intelligence.models.available()`
 
-Returns the installable model catalogue.
+Loads the installable model catalogue.
 
 ```js
 const models = await intelligence.models.available();
 ```
 
-When ready, the SDK fires `intelligence://models?query=all` and resolves when native calls `window.intelligence.onAvailableModelsLoaded(models)`. If native does not reply within 10 seconds, it resolves to `[]`. Outside Despia, it resolves to `[]`.
+Returns `Model[]`. If the runtime is unavailable or native does not reply within 10 seconds, it resolves to `[]`.
 
 ### `intelligence.models.installed()`
 
-Returns models currently installed on the device.
+Loads models installed on this device.
 
 ```js
 const installed = await intelligence.models.installed();
 ```
 
-When ready, the SDK fires `intelligence://models?query=installed` and resolves when native calls `window.intelligence.onInstalledModelsLoaded(models)`. If native does not reply within 10 seconds, it resolves to `[]`. Outside Despia, it resolves to the not-ready object.
+When ready, resolves to `Model[]`. If native does not reply within 10 seconds, it resolves to `[]`. When the runtime is unavailable, it resolves to the not-ready object.
+
+### `Model`
+
+The SDK only requires `id`.
+
+```ts
+type Model = {
+  id: string
+  name?: string
+  [key: string]: unknown
+}
+```
+
+Native may include additional metadata. Treat it as optional.
 
 ### `intelligence.models.download(modelId, callbacks?)`
 
-Starts a native model download.
+Starts a model download.
 
 ```js
 intelligence.models.download('qwen3-0.6b', {
-  onStart: () => showDownload(),
-  onProgress: (percent) => updateBar(percent), // 0-100
+  onStart: () => showDownloadUI(),
+  onProgress: (percent) => updateBar(percent), // integer 0-100
   onEnd: () => markInstalled(),
   onError: (message) => showError(message),
 });
 ```
 
-Downloads are owned by native (`NSURLSession` on iOS, `WorkManager` on Android). They can continue while the app is backgrounded. The SDK does not re-fire downloads on foreground.
+Downloads are handled by the native app. They can continue while your app is backgrounded. The SDK does not restart downloads on foreground because that would create duplicate transfers.
 
 ### `intelligence.models.remove(modelId)`
 
@@ -213,9 +248,9 @@ Removes all installed models.
 await intelligence.models.removeAll();
 ```
 
-### `intelligence.on(event, fn)`
+## Download Events
 
-Global download event listeners. Useful for app-wide state outside the component that started the download.
+Use per-download callbacks for local UI and global listeners for app-wide state.
 
 ```js
 const off = intelligence.on('downloadProgress', (modelId, percent) => {
@@ -232,78 +267,38 @@ Events:
 - `downloadEnd(modelId)`
 - `downloadError(modelId, message)`
 
-`off(event, fn)` removes a listener. `once(event, fn)` runs once.
+`off(event, fn)` removes a listener. `once(event, fn)` runs a listener once.
 
-## Background And Return
+## Soft-Close Resume
 
-When the user swipes home or switches apps, native inference sessions can be torn down before the OS suspends the WebView. The SDK handles the common suspend case:
+Soft close means the user swipes home, switches apps, and later returns while the WebView process is still alive. In that case, JavaScript memory survives, but the native inference session may have been torn down.
 
-1. Native calls `window.focusout` while JS is still alive.
-2. The SDK snapshots active inference jobs.
-3. The app is suspended.
-4. Native calls `window.focusin` when the app returns.
-5. The SDK re-runs each interrupted job with the same params and handler.
+The SDK handles this case automatically. Active inference jobs are snapshotted before suspension and started again when the app returns, using the same params and the same handler.
 
-This creates a new native session and a new internal job id. Your handler stays the same, so your UI continues receiving `stream`, `complete`, and `error` callbacks.
+Important details:
 
-Important limits:
-
-- This only covers suspend/foreground where the JS context stays alive.
-- If the OS fully kills the WebView process, JS memory is gone and the SDK cannot know what was running. In that case, restore from your own app state and call `run()` again.
-- Jobs that complete, error, or are cancelled do not resume.
-- Downloads are different. Native owns the transfer, so the SDK does not snapshot or re-fire downloads.
+- Resume starts a **fresh native inference session**. It does not continue from the exact token where the old session stopped.
+- Your original handler is reused, so your UI keeps receiving `stream`, `complete`, and `error` callbacks.
+- The restarted job gets a new internal job id; the SDK handles routing.
+- Jobs that completed, errored, or were cancelled do not resume.
+- If the OS fully kills the WebView process, JavaScript memory is gone and the SDK cannot resume. Restore from your own app state and call `run()` again.
+- Downloads are separate. Native owns downloads, so the SDK does not restart them.
 
 ## Browser Preview And Fallbacks
 
-This package is safe to import in a desktop browser or SSR path, but Local AI will be unavailable:
+You can import the package in SSR, desktop browser previews, or non-Despia environments. Local AI will simply be unavailable.
 
 ```js
 if (!intelligence.runtime.ok) {
-  // Render normal web UI, hide Local AI, or call a cloud fallback.
+  renderFallbackExperience();
 }
 ```
 
-Do not hardcode model ids as "available" unless `models.installed()` confirms they are installed on the current device.
+## Demo And Tests
 
-## Native Bridge Summary
+This repo includes `demo.html`, a standalone page for testing the SDK inside a Despia WebView.
 
-App developers normally do not need this section, but it helps when debugging native integrations.
-
-The SDK sends commands to native by assigning a URL string:
-
-```js
-window.despia = 'intelligence://text?...';
-```
-
-Native calls back into JavaScript through functions on `window.intelligence`:
-
-- `onMLToken(id, chunk)`
-- `onMLComplete(id, fullText)`
-- `onMLError({ jobId, errorCode, errorMessage })`
-- `onAvailableModelsLoaded(models)`
-- `onInstalledModelsLoaded(models)`
-- `onDownloadStart(modelId)`
-- `onDownloadProgress(modelId, fraction0to1)`
-- `onDownloadEnd(modelId)`
-- `onDownloadError(modelId, message)`
-- `onRemoveSuccess(modelId)`
-- `onRemoveError(modelId, message)`
-- `onRemoveAllSuccess()`
-- `onRemoveAllError(message)`
-
-The full internal bridge contract lives in [`INTERNALS.md`](INTERNALS.md).
-
-## Testing A Local Build
-
-This repo includes a standalone demo page:
-
-```text
-demo.html
-```
-
-Load it in a Despia WebView with `index.js` next to it. It exercises runtime detection, available models, installed models, downloads, removals, and streaming inference through the SDK.
-
-Run the Node tests:
+Run tests:
 
 ```bash
 npm test
